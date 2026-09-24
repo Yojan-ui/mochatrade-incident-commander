@@ -1,0 +1,80 @@
+@import url('https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import 'tailwindcss';
+
+@theme {
+  --color-bg: #000000;
+  --color-panel: #0a0a0a;
+  /* Semantic red: text/borders on black, and a solid fill that carries white text */
+  --color-crit: #ff3b30;
+  --color-crit-fill: #d70015;
+  --color-crit-fill-hover: #b80012;
+  --color-ok: #30d158;
+  --color-warn: #ffb020;
+  --color-info: #5aa9ff;
+
+  --font-sans: 'Instrument Sans', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+}
+
+@layer base {
+  html {
+    color-scheme: dark;
+  }
+  body {
+    background: var(--color-bg);
+    color: var(--color-gray-400);
+    font-family: var(--font-sans);
+    font-size: 13px;
+    -webkit-font-smoothing: antialiased;
+  }
+  :focus-visible {
+    outline: 1px solid #fff;
+    outline-offset: 2px;
+  }
+}
+
+@layer components {
+  /* A single solid 1px packet travelling along a connector line */
+  .packet {
+    position: absolute;
+    top: 0;
+    left: 0;
+    height: 1px;
+    width: 12px;
+    background: currentColor;
+    animation: packet 1.6s linear infinite;
+  }
+  .packet-v {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 1px;
+    height: 10px;
+    background: currentColor;
+    animation: packet-v 1.6s linear infinite;
+  }
+}
+
+@keyframes packet {
+  from {
+    left: 0;
+  }
+  to {
+    left: calc(100% - 12px);
+  }
+}
+@keyframes packet-v {
+  from {
+    top: 0;
+  }
+  to {
+    top: calc(100% - 10px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .packet,
+  .packet-v {
+    animation: none;
+  }
+}
