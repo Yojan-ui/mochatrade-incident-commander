@@ -2,6 +2,8 @@ import { Loader2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import {
   MARKET_LIST,
+  US_STOCK_PERPS,
+  fmtPrice,
   formatMarketList,
   type ActionRecord,
   type Control,
@@ -13,12 +15,6 @@ import {
 const clock = (ts?: number) =>
   ts ? new Date(ts).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : ''
 
-const priceFmt = (market: Market, v: number) =>
-  v.toLocaleString('en-US', {
-    minimumFractionDigits: market === 'SOL-PERP' ? 2 : 1,
-    maximumFractionDigits: market === 'SOL-PERP' ? 2 : 1,
-  })
-
 // Market | Liq/min | Δ | Mark | 24h | Status | Liquidations | Trading
 // Below sm, Δ / Mark / 24h are hidden so the controls stay reachable at 390px.
 const MATRIX_COLS =
@@ -29,7 +25,7 @@ const CONTROL_COPY: Record<Control, { run: string; running: string; resume: stri
   halt: { run: 'Halt', running: 'Halting', resume: 'Resume', action: 'trading' },
 }
 
-function ControlButton({
+export function ControlButton({
   market,
   control,
   record,
@@ -72,7 +68,7 @@ function ControlButton({
   )
 }
 
-function marketStatus(
+export function marketStatus(
   pause: ActionRecord,
   halt: ActionRecord,
   delta: number,
@@ -143,8 +139,13 @@ function ControlMatrix({
                 halt.status === 'executed' && 'bg-warn/[0.04]',
               )}
             >
-              <span role="cell" className="font-semibold text-white">
+              <span role="cell" className="flex min-w-0 flex-col font-semibold text-white">
                 {m.replace('-PERP', '')}
+                {metrics.usEquityClosed && US_STOCK_PERPS.includes(m) && (
+                  <span className="text-[9px] font-medium text-warn" title="US equity markets closed; reference price is stale">
+                    STALE REF
+                  </span>
+                )}
               </span>
               <span role="cell" className={cn('text-right', status.label === 'CASCADING' ? 'text-crit' : 'text-white')}>
                 {liq.toLocaleString('en-US')}
@@ -157,7 +158,7 @@ function ControlMatrix({
                 {Math.abs(delta).toLocaleString('en-US')}
               </span>
               <span role="cell" className="hidden text-right text-white sm:block">
-                {priceFmt(m, metrics.prices[m])}
+                {fmtPrice(m, metrics.prices[m])}
               </span>
               <span role="cell" className={cn('hidden text-right sm:block', dd < 0 ? 'text-crit' : 'text-ok')}>
                 {(dd * 100).toFixed(2)}%

@@ -1,240 +1,444 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, type RefObject } from 'react'
+import { Suspense, useEffect, useLayoutEffect, useMemo, useRef, type RefObject } from 'react'
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
+import { Billboard, Text } from '@react-three/drei'
 import * as THREE from 'three'
+import monoFont from '@fontsource/jetbrains-mono/files/jetbrains-mono-latin-800-normal.woff?url'
 import { cn } from '@/lib/utils'
-import { vortexOmega, vortexStrength } from './cascade-dynamics'
-import { LIQUIDATION_THRESHOLD, MARKET_LIST, type Market, type Metrics } from './use-incident-sim'
+import type { LaneState } from './cascade-dynamics'
+import type { Market, Metrics } from './use-incident-sim'
 
 /*
- * Utilitarian 3D view of the cascade. Hard rules:
- *   - orthographic camera only, no lights, no shadows
- *   - MeshBasicMaterial (wireframe) plus Basic line/point materials, flat semantic colours
- *   - nothing solid or shaded; all motion is a deterministic function of the data and time
+ * Single-asset limit-order-book (LOB) surface.
+ *
+ *   x  price level on the bid side: mid at the right edge, 2% below mid at the left
+ *   z  across the book (order queue position)
+ *   y  cumulative bid liquidity resting at or above that level
+ *
+ * A healthy book follows the standard cumulative-depth curve: thin at mid,
+ * thickening deeper into the book. During a cascade, liquidity near mid is
+ * pulled. Severity comes from the historical crash replay
+ * (src/data/historical-crash.json): each tick's severity is fed into uSeverity,
+ * which scales multi-octave simplex fBM exponentially in amplitude, so the
+ * floor caves into wide canyons that churn slowly on a slowed clock exactly
+ * when the recorded timeline says. Each liquidation spike sends a slow
+ * shockwave out from mid.
+ *
+ * Heat is the share of the drop to the floor: green, yellow, then #EF4444.
+ * Wires that hit the floor turn white (liquidations executing); the deepest
+ * red wires lose opacity and shred into holes. A circuit breaker hard-zeroes
+ * severity, snapping the surface flat and cyan in the same frame.
+ *
+ * Hard rules: orthographic camera, no lights, no shadows, wireframe only, and
+ * no lighting terms anywhere in the shader.
  */
 
-const WHITE = new THREE.Color('#ffffff')
-const AMBER = new THREE.Color('#ffb020')
-const RED = new THREE.Color('#ff3b30')
-
-const TICK_GAP = 0.75
-const ROW_GAP = 1.9
-const HEIGHT = 4.2
-const ROWS = ['ALL', ...MARKET_LIST] as const
-const CAMERA_POSITION = new THREE.Vector3(3.5, 6, 13)
-const MAX_POINTS = 360
-
-type Layout = ReturnType<typeof useLayout>
-
-// Row 0 (ALL) sits nearest the camera
-const zOf = (row: number) => ((ROWS.length - 1) / 2 - row) * ROW_GAP
-
-// Keyed on the series arrays, which only change on counter ticks, so price
-// updates between ticks don't rebuild geometry or refit the camera.
-function useLayout({ liqHistory, liqByMarket }: Metrics) {
-  return useMemo(() => {
-    const n = liqHistory.length
-    const width = (n - 1) * TICK_GAP
-    const yScale = HEIGHT / Math.max(...liqHistory, LIQUIDATION_THRESHOLD * 1.15)
-    return {
-      n,
-      width,
-      x0: -width / 2,
-      zOf,
-      yScale,
-      seriesOf: (row: number) => (row === 0 ? liqHistory : liqByMarket[MARKET_LIST[row - 1]]),
-    }
-  }, [liqHistory, liqByMarket])
-}
-
-function segmentGeometry(positions: number[], colors?: number[]) {
-  const geo = new THREE.BufferGeometry()
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
-  if (colors) geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3))
-  return geo
-}
-
-// Mesh resolution: columns along time, two segments per row gap. Kept coarse
-// so every wire stays distinct at dashboard size.
-const SEG_X = 44
-const SEG_Z = 8
-
-// Vortex shape, in the vertical (x-y) plane facing the camera, centred on the
-// leading edge of the data. A vertex at distance r from the centre is rotated
-// by strength * TWIST * ln(R / r), which curls the surface into a logarithmic
-// spiral. A radial wave rolls along arms of constant (angle + PITCH * ln(r / R)),
-// which are also log spirals; each market row rolls ROW_LAG radians behind the
-// one in front, so the rows wind like a feedback loop.
-const VORTEX_R = 3.4
-const TWIST = 1.6
-const ARMS = 3
-const PITCH = 2.2
-const RADIAL_AMPLITUDE = 0.28
-const ROW_LAG = 0.6
-const R_MIN = 0.3
-// How fast the mesh eases toward new data and a new vortex strength (per second)
-const DATA_EASE = 8
-const STRENGTH_EASE = 2.5
-
+const WIDTH = 24 // x: price levels
+const DEPTH = 9 // z: across the book
+// Extreme density for razor-edged ravines, with square cells on the 24×9 surface
+// (320/24 ≈ 128/9 ≈ 13.3 segments per unit). ~41k vertices.
+const SEG_X = 320
+const SEG_Z = 128
+/** Height of a fully healthy book at its deepest level */
+const BOOK_HEIGHT = 2.6
+/** How far a total loss cuts below the floor */
+const RAVINE_DEPTH = 5
+/** Bid levels shown, as % below mid */
+const BOOK_SPAN_PCT = 2
 /**
- * The cascade as a wireframe surface. Resting height is the liquidation data
- * (time along x, markets across z). While liquidations compound, vertices around
- * the newest data are twisted into a rolling logarithmic spiral whose strength
- * comes from the compounded growth factor. The spiral unwinds when growth stops.
+ * Severity follows the replay closely: ~1 s to 95% of each new tick's value
+ * (ticks arrive every 0.5 s), which hides the steps without lagging the
+ * timeline. Only the circuit breaker is instant.
  */
-function VortexMesh({ layout, metrics, animate }: { layout: Layout; metrics: Metrics; animate: boolean }) {
-  const material = useRef<THREE.MeshBasicMaterial>(null)
-  const invalidate = useThree((s) => s.invalidate)
-  const latest = useRef(metrics)
-  latest.current = metrics
+const SEVERITY_EASE = 2.5
+/** Shockwave: travel speed across the surface (uv units/s) and lifetime (s) */
+const SHOCK_SPEED = 0.2
+const SHOCK_LIFE = 5
+/** Circuit-breaker banner: hard on/off at 1.25 Hz, under the 3-flashes-per-second limit */
+const FLASH_HZ = 1.25
+const CAMERA_POSITION = new THREE.Vector3(3.5, 7, 12)
 
-  // The unit grid is copied once: useFrame overwrites the live position buffer
-  // with world-space vertices every frame, so it can't be read back as the grid.
-  const { geometry, unit } = useMemo(() => {
-    const geo = new THREE.PlaneGeometry(1, 1, SEG_X, SEG_Z)
-    geo.rotateX(-Math.PI / 2)
-    return { geometry: geo, unit: Float32Array.from(geo.attributes.position.array) }
-  }, [])
-  useEffect(() => () => geometry.dispose(), [geometry])
+const X_LEFT = -WIDTH / 2
+const X_RIGHT = WIDTH / 2
+const Z_FRONT = DEPTH / 2
+const Z_BACK = -DEPTH / 2
 
-  // Grid coordinates in world space, plus the data height each vertex rests at
-  const grid = useMemo(() => {
-    const src = unit
-    const count = src.length / 3
-    const x = new Float32Array(count)
-    const z = new Float32Array(count)
-    const target = new Float32Array(count)
-    const { n, x0, width, yScale, seriesOf } = layout
-    const lastRow = ROWS.length - 1
-    for (let i = 0; i < count; i++) {
-      const u = src[i * 3] + 0.5 // 0..1 along time
-      const rowPos = (0.5 - src[i * 3 + 2]) * lastRow // 0 = ALL (front) .. 3 = SOL (back)
-      x[i] = x0 + u * width
-      z[i] = zOf(rowPos)
-      const t = u * (n - 1)
-      const i0 = Math.floor(t)
-      const i1 = Math.min(i0 + 1, n - 1)
-      const f = t - i0
-      const r0 = Math.floor(rowPos)
-      const r1 = Math.min(r0 + 1, lastRow)
-      const g = rowPos - r0
-      const at = (row: number) => {
-        const s = seriesOf(row)
-        return s[i0] + (s[i1] - s[i0]) * f
-      }
-      target[i] = (at(r0) + (at(r1) - at(r0)) * g) * yScale
+const BANNER_FONT = 1.15
+const BANNER_W = 22
+const BANNER_H = 1.9
+const BANNER_Y = 0.6
+
+const COLORS = {
+  green: new THREE.Color('#22c55e'),
+  yellow: new THREE.Color('#eab308'),
+  red: new THREE.Color('#ef4444'),
+  cyan: new THREE.Color('#06b6d4'),
+}
+
+/** Distinct fracture pattern per asset */
+const SEEDS: Partial<Record<Market, number>> = { 'BTC-PERP': 3.7, 'ETH-PERP': 21.4, 'SOL-PERP': 38.9 }
+
+// 3D simplex noise: Ashima Arts / Stefan Gustavson (MIT licence)
+const simplex3d = /* glsl */ `
+  vec3 mod289(vec3 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+  vec4 mod289(vec4 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+  vec4 permute(vec4 x) { return mod289(((x * 34.0) + 1.0) * x); }
+  vec4 taylorInvSqrt(vec4 r) { return 1.79284291400159 - 0.85373472095314 * r; }
+  float snoise(vec3 v) {
+    const vec2 C = vec2(1.0 / 6.0, 1.0 / 3.0);
+    const vec4 D = vec4(0.0, 0.5, 1.0, 2.0);
+    vec3 i = floor(v + dot(v, C.yyy));
+    vec3 x0 = v - i + dot(i, C.xxx);
+    vec3 g = step(x0.yzx, x0.xyz);
+    vec3 l = 1.0 - g;
+    vec3 i1 = min(g.xyz, l.zxy);
+    vec3 i2 = max(g.xyz, l.zxy);
+    vec3 x1 = x0 - i1 + C.xxx;
+    vec3 x2 = x0 - i2 + C.yyy;
+    vec3 x3 = x0 - D.yyy;
+    i = mod289(i);
+    vec4 p = permute(permute(permute(
+              i.z + vec4(0.0, i1.z, i2.z, 1.0))
+            + i.y + vec4(0.0, i1.y, i2.y, 1.0))
+            + i.x + vec4(0.0, i1.x, i2.x, 1.0));
+    float n_ = 0.142857142857;
+    vec3 ns = n_ * D.wyz - D.xzx;
+    vec4 j = p - 49.0 * floor(p * ns.z * ns.z);
+    vec4 x_ = floor(j * ns.z);
+    vec4 y_ = floor(j - 7.0 * x_);
+    vec4 x = x_ * ns.x + ns.yyyy;
+    vec4 y = y_ * ns.x + ns.yyyy;
+    vec4 h = 1.0 - abs(x) - abs(y);
+    vec4 b0 = vec4(x.xy, y.xy);
+    vec4 b1 = vec4(x.zw, y.zw);
+    vec4 s0 = floor(b0) * 2.0 + 1.0;
+    vec4 s1 = floor(b1) * 2.0 + 1.0;
+    vec4 sh = -step(h, vec4(0.0));
+    vec4 a0 = b0.xzyw + s0.xzyw * sh.xxyy;
+    vec4 a1 = b1.xzyw + s1.xzyw * sh.zzww;
+    vec3 p0 = vec3(a0.xy, h.x);
+    vec3 p1 = vec3(a0.zw, h.y);
+    vec3 p2 = vec3(a1.xy, h.z);
+    vec3 p3 = vec3(a1.zw, h.w);
+    vec4 norm = taylorInvSqrt(vec4(dot(p0, p0), dot(p1, p1), dot(p2, p2), dot(p3, p3)));
+    p0 *= norm.x; p1 *= norm.y; p2 *= norm.z; p3 *= norm.w;
+    vec4 m = max(0.6 - vec4(dot(x0, x0), dot(x1, x1), dot(x2, x2), dot(x3, x3)), 0.0);
+    m = m * m;
+    return 42.0 * dot(m * m, vec4(dot(p0, x0), dot(p1, x1), dot(p2, x2), dot(p3, x3)));
+  }
+`
+
+const vertexShader = /* glsl */ `
+  uniform float uSeverity; // 0..1, the historical replay's severity; hard-zeroed by a breaker
+  uniform float uBreaker;
+  uniform float uTime;
+  uniform float uSeed;
+  uniform float uHeight;
+  uniform float uRavine;
+  uniform float uAspect;
+  uniform float uShockAge;
+  uniform float uShockAmp;
+  uniform float uShockSpeed;
+  uniform float uShockLife;
+  varying float vHeat; // share of the drop from healthy depth to the floor, 0..1; -1 = breaker
+  varying float vCore; // 1 where the surface has hit the floor: liquidations executing
+  varying float vTear; // noise field that decides where the deepest wires shred
+
+  ${simplex3d}
+
+  // Fractal Brownian motion: 5 octaves of simplex, roughly [-1, 1]
+  float fbm(vec3 p) {
+    float sum = 0.0;
+    float a = 0.5;
+    for (int i = 0; i < 5; i++) {
+      sum += a * snoise(p);
+      p = p * 2.03 + vec3(17.1, 3.3, 5.9);
+      a *= 0.42; // damped fine octaves: fewer, wider, more massive features
     }
-    return { count, x, z, target }
-  }, [unit, layout])
+    return sum;
+  }
 
-  const dyn = useRef({ heights: null as Float32Array | null, strength: 0, phase: 0 })
+  // Ridged fBM: sharp creases where the noise crosses zero, roughly [0, 1]
+  float ridged(vec3 p) {
+    float sum = 0.0;
+    float a = 0.5;
+    for (int i = 0; i < 5; i++) {
+      float n = 1.0 - abs(snoise(p));
+      sum += a * n * n;
+      p = p * 2.11 + vec3(9.7, 1.3, 4.1);
+      a *= 0.42; // damped fine octaves: fewer, wider, more massive features
+    }
+    return sum;
+  }
 
-  // With reduced motion the loop only renders on demand, so ask for a frame per data change
+  void main() {
+    vec3 p = position;
+    float d = 1.0 - uv.x; // distance from mid: 0 at mid, 1 at the deepest level shown
+    float sev = uSeverity;
+
+    // Cumulative bid depth of a healthy book
+    float healthy = uHeight * (0.22 + 0.78 * (1.0 - exp(-d / 0.28)));
+
+    // All noise runs on a slowed clock so the surface churns deliberately,
+    // like a structure giving way, not static
+    float t = uTime * 0.06;
+    float amp = (exp(2.4 * sev) - 1.0) / (exp(2.4) - 1.0);
+    float freq = 1.1 * exp2(1.2 * sev); // low and gently climbing: wide canyons
+    float speed = 0.3 + 1.5 * sev * sev;
+    vec3 q = vec3(d * uAspect * freq * 0.3, uv.y * freq * 0.3, t * speed) + vec3(uSeed);
+
+    float churn = fbm(q);
+    float crack = ridged(q * 1.15 + vec3(0.0, 0.0, t * speed * 0.5));
+    float nearMid = exp(-d / 0.38);
+
+    // Share of liquidity lost at this level
+    float loss = clamp(sev * nearMid * (0.35 + 0.9 * crack) + amp * nearMid * 0.45 * churn, 0.0, 1.0);
+
+    // Shockwave: a ring expanding from mid (right edge, centre of the book)
+    vec2 rq = vec2(d * uAspect, uv.y - 0.5);
+    float front = uShockAge * uShockSpeed * uAspect;
+    float fade = clamp(1.0 - uShockAge / uShockLife, 0.0, 1.0);
+    float ring = uShockAmp * fade * exp(-pow((length(rq) - front) / 0.35, 2.0));
+    // A tremor, not a collapse: the slow ease on severity carries the cave-in
+    loss = clamp(loss + ring * 0.3 * nearMid + ring * 0.12, 0.0, 1.0);
+
+    float h = healthy * (1.0 - loss) - uRavine * loss * loss;
+
+    // Settling: a slow, low-frequency sag that only ever pushes downward
+    float settle = snoise(vec3(uv.x * 18.0, uv.y * 7.0, t * 4.0));
+    h -= amp * nearMid * 0.25 * abs(settle);
+    // Broken slabs jutting up from the ravine walls
+    h += amp * nearMid * 0.45 * pow(max(churn, 0.0), 3.0);
+
+    // The floor: anything that reaches it is liquidations executing. White marks
+    // the rim where the collapse first meets the floor (the last 0.35 units of
+    // the drop) and sparse sparks across it; the rest of the floor shreds red.
+    float floorY = -uRavine;
+    float rim = 1.0 - smoothstep(floorY, floorY + 0.35, h);
+    h = max(h, floorY);
+    vHeat = clamp((healthy - h) / (healthy + uRavine), 0.0, 1.0);
+    vTear = snoise(vec3(uv.x * 45.0, uv.y * 20.0, t * 3.0)) * 0.5 + 0.5;
+    float onFloor = h <= floorY + 0.001 ? 1.0 : 0.0;
+    vCore = max(rim * (1.0 - onFloor), onFloor * step(0.78, vTear));
+
+    // Circuit breaker: severity is already zero; the surface is rigid, flat and cyan
+    if (uBreaker > 0.5) {
+      h = 0.0;
+      vHeat = -1.0;
+      vCore = 0.0;
+    }
+
+    p.z = h; // plane is rotated so local z is world y
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
+  }
+`
+
+const fragmentShader = /* glsl */ `
+  uniform vec3 uGreen;
+  uniform vec3 uYellow;
+  uniform vec3 uRed;
+  uniform vec3 uCyan;
+  varying float vHeat;
+  varying float vCore;
+  varying float vTear;
+
+  void main() {
+    if (vHeat < 0.0) {
+      gl_FragColor = vec4(uCyan, 1.0);
+      return;
+    }
+    // Core meltdown: the surface has hit the floor
+    if (vCore > 0.5) {
+      gl_FragColor = vec4(1.0);
+      return;
+    }
+    vec3 c = vHeat < 0.35
+      ? mix(uGreen, uYellow, vHeat / 0.35)
+      : mix(uYellow, uRed, clamp((vHeat - 0.35) / 0.4, 0.0, 1.0));
+
+    // Thermal tearing: the deepest red wires thin out and shred into holes
+    float deep = smoothstep(0.7, 1.0, vHeat);
+    if (vTear < deep * 0.55) discard;
+    gl_FragColor = vec4(c, 1.0 - 0.45 * deep);
+  }
+`
+
+function Surface({
+  assetId,
+  target,
+  state,
+  shock,
+  animate,
+}: {
+  assetId: Market
+  /** Severity to track: the historical replay's current tick, 0..1 */
+  target: number
+  state: LaneState
+  /** Bumped per liquidation spike: { id, amp } starts a new shockwave */
+  shock: { id: unknown; amp: number }
+  animate: boolean
+}) {
+  const invalidate = useThree((s) => s.invalidate)
+  const geometry = useMemo(() => new THREE.PlaneGeometry(WIDTH, DEPTH, SEG_X, SEG_Z), [])
+  const material = useMemo(
+    () =>
+      new THREE.ShaderMaterial({
+        vertexShader,
+        fragmentShader,
+        wireframe: true,
+        transparent: true, // alpha tear on the deepest wires
+        uniforms: {
+          uSeverity: { value: 0 },
+          uBreaker: { value: 0 },
+          uTime: { value: 0 },
+          uSeed: { value: 0 },
+          uHeight: { value: BOOK_HEIGHT },
+          uRavine: { value: RAVINE_DEPTH },
+          uAspect: { value: WIDTH / DEPTH },
+          uShockAge: { value: SHOCK_LIFE },
+          uShockAmp: { value: 0 },
+          uShockSpeed: { value: SHOCK_SPEED },
+          uShockLife: { value: SHOCK_LIFE },
+          uGreen: { value: COLORS.green },
+          uYellow: { value: COLORS.yellow },
+          uRed: { value: COLORS.red },
+          uCyan: { value: COLORS.cyan },
+        },
+      }),
+    [],
+  )
+  useEffect(
+    () => () => {
+      geometry.dispose()
+      material.dispose()
+    },
+    [geometry, material],
+  )
+
+  // Switching asset: new fracture pattern (same replay timeline)
+  useEffect(() => {
+    material.uniforms.uSeed.value = SEEDS[assetId] ?? 0
+    material.uniforms.uShockAge.value = SHOCK_LIFE
+    invalidate()
+  }, [assetId, material, invalidate])
+
+  // New spike: restart the shockwave. A tab switch also changes the series, so
+  // only fire for new ticks on the asset already on screen.
+  const shownAsset = useRef(assetId)
+  useEffect(() => {
+    const sameAsset = shownAsset.current === assetId
+    shownAsset.current = assetId
+    if (!sameAsset || shock.amp <= 0) return
+    material.uniforms.uShockAge.value = 0
+    material.uniforms.uShockAmp.value = shock.amp
+  }, [shock, assetId, material])
+
+  const latest = useRef({ target, state })
+  latest.current = { target, state }
+
   useEffect(() => {
     if (!animate) invalidate()
-  }, [animate, grid, metrics.critical, metrics.growth, invalidate])
+  }, [animate, target, state, invalidate])
 
   useFrame((_, rawDelta) => {
     const dt = Math.min(rawDelta, 0.05)
-    const m = latest.current
-    const d = dyn.current
-    const { count, x, z, target } = grid
-    if (!d.heights || d.heights.length !== count) d.heights = Float32Array.from(target)
-
-    // SEV-1 snaps the colour in the same frame; no blending
-    material.current?.color.copy(m.critical ? RED : AMBER)
-
-    const targetStrength = vortexStrength(m.growth)
-    if (animate) {
-      d.strength += (targetStrength - d.strength) * (1 - Math.exp(-STRENGTH_EASE * dt))
-      d.phase += vortexOmega(m.critical) * dt
-      const k = 1 - Math.exp(-DATA_EASE * dt)
-      for (let i = 0; i < count; i++) d.heights[i] += (target[i] - d.heights[i]) * k
+    const u = material.uniforms
+    const { target: t, state: s } = latest.current
+    const breaker = s !== 'live'
+    u.uBreaker.value = breaker ? 1 : 0
+    if (breaker) {
+      // Hard stop: severity zeroes this frame, so all fBM churn vanishes at once.
+      // On release the book rebuilds from flat toward the replay's current tick.
+      u.uSeverity.value = 0
+      u.uShockAge.value = SHOCK_LIFE
     } else {
-      d.strength = targetStrength
-      d.heights.set(target)
+      const k = animate ? 1 - Math.exp(-SEVERITY_EASE * dt) : 1
+      u.uSeverity.value += (t - u.uSeverity.value) * k
     }
-
-    const { x0, width } = layout
-    const cx = x0 + width - VORTEX_R * 0.45 // on the leading (newest) edge
-    const cy = HEIGHT * 0.5
-    const lnR = Math.log(VORTEX_R)
-    const pos = geometry.attributes.position.array as Float32Array
-    const S = d.strength
-
-    for (let i = 0; i < count; i++) {
-      let px = x[i]
-      let py = d.heights[i]
-      const pz = z[i]
-      const dx = px - cx
-      const dy = py - cy
-      const r = Math.max(Math.hypot(dx, dy), R_MIN)
-      if (S > 0 && r < VORTEX_R) {
-        const lnr = Math.log(r)
-        const angle = Math.atan2(dy, dx) + S * TWIST * (lnR - lnr)
-        const falloff = 1 - r / VORTEX_R
-        const wave = Math.cos(ARMS * (angle + PITCH * (lnr - lnR)) - d.phase - pz * ROW_LAG)
-        const rr = r * (1 + S * RADIAL_AMPLITUDE * falloff * wave)
-        px = cx + rr * Math.cos(angle)
-        py = cy + rr * Math.sin(angle)
-      }
-      pos[i * 3] = px
-      pos[i * 3 + 1] = py
-      pos[i * 3 + 2] = pz
+    if (animate) {
+      u.uTime.value += dt
+      u.uShockAge.value = Math.min(SHOCK_LIFE, u.uShockAge.value + dt)
+    } else {
+      u.uShockAge.value = SHOCK_LIFE // no moving shockwaves with reduced motion
     }
-    geometry.attributes.position.needsUpdate = true
   })
 
+  return <mesh geometry={geometry} material={material} rotation={[-Math.PI / 2, 0, 0]} frustumCulled={false} />
+}
+
+const PLATE_OUTLINE = (() => {
+  const w = BANNER_W / 2
+  const h = BANNER_H / 2
+  const geo = new THREE.BufferGeometry()
+  geo.setAttribute('position', new THREE.Float32BufferAttribute([-w, -h, 0.01, w, -h, 0.01, w, h, 0.01, -w, h, 0.01], 3))
+  return geo
+})()
+
+/**
+ * Brutalist plate over the surface while a circuit breaker is on: black slab,
+ * 1px cyan rule, cyan stencil text. Faces the camera, hard-blinks, no fade.
+ * Always mounted (hidden while live) so the font is ready before the first trip,
+ * and drawn over the terrain because it is a warning, not part of the book.
+ */
+function BreakerBanner({ state, animate }: { state: LaneState; animate: boolean }) {
+  const group = useRef<THREE.Group>(null)
+  const invalidate = useThree((s) => s.invalidate)
+  const latest = useRef(state)
+  latest.current = state
+  useEffect(() => {
+    if (!animate) invalidate()
+  }, [animate, state, invalidate])
+  useFrame(({ clock }) => {
+    if (!group.current) return
+    const blinkOn = !animate || Math.floor(clock.elapsedTime * FLASH_HZ * 2) % 2 === 0
+    group.current.visible = latest.current !== 'live' && blinkOn
+  })
   return (
-    <mesh geometry={geometry} frustumCulled={false}>
-      <meshBasicMaterial ref={material} wireframe color={AMBER} />
-    </mesh>
+    <Billboard position={[0, BANNER_Y, 0]} ref={group} visible={false}>
+      {/* transparent (at full opacity) puts the plate in the same render pass as the
+          surface, which is transparent for its alpha tear; renderOrder then draws it last */}
+      <mesh renderOrder={10}>
+        <planeGeometry args={[BANNER_W, BANNER_H]} />
+        <meshBasicMaterial color="#000000" transparent depthTest={false} depthWrite={false} />
+      </mesh>
+      <lineLoop geometry={PLATE_OUTLINE} renderOrder={11}>
+        <lineBasicMaterial color={COLORS.cyan} transparent depthTest={false} depthWrite={false} />
+      </lineLoop>
+      <Text
+        renderOrder={12}
+        material-depthTest={false}
+        material-depthWrite={false}
+        font={monoFont}
+        fontSize={BANNER_FONT}
+        letterSpacing={0.04}
+        color={COLORS.cyan}
+        anchorX="center"
+        anchorY="middle"
+        position={[0, 0, 0.02]}
+      >
+        {`CIRCUIT BREAKER // ${state === 'paused' ? 'PAUSED' : 'HALTED'}`}
+      </Text>
+    </Billboard>
   )
 }
 
-/** Floor frame, row baselines and time gridlines every 7 ticks */
-function Floor({ layout }: { layout: Layout }) {
+/** Floor outline, mid-price line and price-level ticks, as reference geometry */
+function Frame() {
   const geometry = useMemo(() => {
-    const { n, x0, width, zOf } = layout
-    const x1 = x0 + width
-    const zFront = zOf(0) + ROW_GAP / 2
-    const zBack = zOf(ROWS.length - 1) - ROW_GAP / 2
     const pos: number[] = []
-    ROWS.forEach((_, row) => pos.push(x0, 0, zOf(row), x1, 0, zOf(row)))
-    for (let i = 0; i < n; i += 7) {
-      const x = x0 + i * TICK_GAP
-      pos.push(x, 0, zFront, x, 0, zBack)
+    pos.push(X_LEFT, 0, Z_BACK, X_RIGHT, 0, Z_BACK, X_RIGHT, 0, Z_BACK, X_RIGHT, 0, Z_FRONT)
+    pos.push(X_RIGHT, 0, Z_FRONT, X_LEFT, 0, Z_FRONT, X_LEFT, 0, Z_FRONT, X_LEFT, 0, Z_BACK)
+    for (let i = 0; i <= 4; i++) {
+      const x = X_RIGHT - (i / 4) * WIDTH
+      pos.push(x, 0, Z_FRONT, x, 0, Z_FRONT + 0.35) // tick marks along the front edge
     }
-    pos.push(x0, 0, zFront, x1, 0, zFront, x1, 0, zFront, x1, 0, zBack, x1, 0, zBack, x0, 0, zBack, x0, 0, zBack, x0, 0, zFront)
-    return segmentGeometry(pos)
-  }, [layout])
+    const geo = new THREE.BufferGeometry()
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3))
+    return geo
+  }, [])
   useEffect(() => () => geometry.dispose(), [geometry])
-
   return (
     <lineSegments geometry={geometry}>
-      <lineBasicMaterial color={WHITE} transparent opacity={0.14} />
-    </lineSegments>
-  )
-}
-
-/** Red wireframe plane at the SEV-1 threshold over the ALL row */
-function ThresholdPlane({ layout }: { layout: Layout }) {
-  const { x0, width, zOf, yScale } = layout
-  const y = LIQUIDATION_THRESHOLD * yScale
-  const z = zOf(0)
-  const geometry = useMemo(() => {
-    const x1 = x0 + width
-    const h = ROW_GAP * 0.35
-    const pos: number[] = []
-    // outline plus cross-hatching every 4 ticks
-    pos.push(x0, y, z - h, x1, y, z - h, x1, y, z - h, x1, y, z + h, x1, y, z + h, x0, y, z + h, x0, y, z + h, x0, y, z - h)
-    for (let x = x0; x <= x1 + 1e-6; x += TICK_GAP * 4) pos.push(x, y, z - h, x, y, z + h)
-    return segmentGeometry(pos)
-  }, [x0, width, y, z])
-  useEffect(() => () => geometry.dispose(), [geometry])
-
-  return (
-    <lineSegments geometry={geometry}>
-      <lineBasicMaterial color={RED} />
+      <lineBasicMaterial color="#ffffff" transparent opacity={0.25} />
     </lineSegments>
   )
 }
@@ -243,195 +447,106 @@ interface LabelAnchor {
   key: string
   text: string
   at: [number, number, number]
-  /** right-aligned labels sit to the left of their anchor */
-  align: 'left' | 'right'
+  align: 'left' | 'right' | 'center'
   tone: string
 }
 
-function labelAnchors({ x0, width, yScale }: Layout): LabelAnchor[] {
-  return [
-    ...ROWS.map((row, i) => ({
-      key: row,
-      text: row.replace('-PERP', ''),
-      at: [x0 - 0.3, 0, zOf(i)] as [number, number, number],
-      align: 'right' as const,
-      tone: 'text-gray-400',
-    })),
-    {
-      key: 'threshold',
-      text: `${LIQUIDATION_THRESHOLD}/min`,
-      at: [x0 + width + 0.25, LIQUIDATION_THRESHOLD * yScale, zOf(0)],
-      align: 'left',
-      tone: 'text-crit',
-    },
-  ]
-}
+// Price-level ticks along the front edge: mid on the right, deeper bids to the left
+const ANCHORS: LabelAnchor[] = Array.from({ length: 5 }, (_, i) => ({
+  key: `tick-${i}`,
+  text: i === 0 ? 'mid' : `−${((i / 4) * BOOK_SPAN_PCT).toFixed(1)}%`,
+  at: [X_RIGHT - (i / 4) * WIDTH, 0, Z_FRONT + 0.9] as [number, number, number],
+  align: 'center' as const,
+  tone: i === 0 ? 'text-gray-300' : 'text-gray-500',
+}))
 
 /**
  * Positions plain DOM labels over the canvas by projecting their 3D anchors.
- * The camera is fixed, so this only reruns when the layout or canvas size changes.
  * Declared after FitCamera so it projects through the already-fitted camera.
  */
-function ProjectLabels({ anchors, nodes }: { anchors: LabelAnchor[]; nodes: RefObject<Map<string, HTMLElement>> }) {
+function ProjectLabels({ nodes }: { nodes: RefObject<Map<string, HTMLElement>> }) {
   const camera = useThree((s) => s.camera)
   const size = useThree((s) => s.size)
   useLayoutEffect(() => {
     const v = new THREE.Vector3()
-    const placed: { x: number; y: number }[] = []
-    for (const a of anchors) {
+    for (const a of ANCHORS) {
       const el = nodes.current.get(a.key)
       if (!el) continue
       v.set(...a.at).project(camera)
       const px = ((v.x + 1) / 2) * size.width
       const py = ((1 - v.y) / 2) * size.height
-      el.style.transform = `translate(${px}px, ${py}px) translate(${a.align === 'right' ? '-100%' : '0'}, -50%)`
-      // Hide a label rather than let it overlap one already placed (narrow canvases)
-      const collides = placed.some((p) => Math.abs(p.y - py) < 12 && Math.abs(p.x - px) < 40)
-      el.style.visibility = collides ? 'hidden' : 'visible'
-      if (!collides) placed.push({ x: px, y: py })
+      const shift = a.align === 'right' ? '-100%' : a.align === 'center' ? '-50%' : '0'
+      el.style.transform = `translate(${px}px, ${py}px) translate(${shift}, -50%)`
+      el.style.visibility = 'visible'
     }
-  }, [anchors, camera, size, nodes])
+  }, [camera, size, nodes])
   return null
 }
 
-/**
- * Live liquidations as points falling from the newest column of each market
- * row. Spawn rate follows each market's current rate; a market with pause or
- * halt engaged stops spawning, so its stream visibly drains while others continue.
- */
-function FallingPoints({
-  layout,
-  metrics,
-  engaged,
-  animate,
-}: {
-  layout: Layout
-  metrics: Metrics
-  engaged: Record<Market, boolean>
-  animate: boolean
-}) {
-  const points = useRef<THREE.Points>(null)
-  const material = useRef<THREE.PointsMaterial>(null)
-  const latest = useRef({ layout, metrics, engaged })
-  latest.current = { layout, metrics, engaged }
-
-  const state = useMemo(
-    () => ({
-      pos: new Float32Array(MAX_POINTS * 3).fill(-1000),
-      vel: new Float32Array(MAX_POINTS),
-      alive: new Uint8Array(MAX_POINTS),
-      carry: 0,
-    }),
-    [],
-  )
-  const geometry = useMemo(() => {
-    const geo = new THREE.BufferGeometry()
-    geo.setAttribute('position', new THREE.BufferAttribute(state.pos, 3))
-    return geo
-  }, [state])
-  useEffect(() => () => geometry.dispose(), [geometry])
-
-  useFrame((_, rawDelta) => {
-    if (!animate) return
-    const delta = Math.min(rawDelta, 0.05)
-    const { layout: l, metrics: m, engaged: e } = latest.current
-    const last = l.n - 1
-    material.current?.color.copy(m.critical ? RED : AMBER)
-
-    // One point per liquidation (per minute → per second) from markets still liquidating
-    const activeRates = MARKET_LIST.map((mk) => (e[mk] ? 0 : m.liqByMarket[mk][last]))
-    const activeTotal = activeRates.reduce((a, b) => a + b, 0)
-    state.carry += Math.min(activeTotal / 60, 90) * delta
-    while (state.carry >= 1) {
-      state.carry -= 1
-      const slot = state.alive.indexOf(0)
-      if (slot === -1) break
-      let r = Math.random() * activeTotal
-      const row = 1 + Math.max(0, activeRates.findIndex((rate) => (r -= rate) < 0))
-      state.alive[slot] = 1
-      state.vel[slot] = 0.5
-      state.pos[slot * 3] = l.x0 + last * TICK_GAP + (Math.random() - 0.5) * 0.3
-      state.pos[slot * 3 + 1] = l.seriesOf(row)[last] * l.yScale
-      state.pos[slot * 3 + 2] = l.zOf(row) + (Math.random() - 0.5) * 0.3
-    }
-
-    for (let i = 0; i < MAX_POINTS; i++) {
-      if (!state.alive[i]) continue
-      state.vel[i] += 9 * delta
-      state.pos[i * 3 + 1] -= state.vel[i] * delta
-      state.pos[i * 3] += 0.35 * delta // drift forward in time as they fall
-      if (state.pos[i * 3 + 1] <= 0) {
-        state.alive[i] = 0
-        state.pos[i * 3 + 1] = -1000
-      }
-    }
-    geometry.attributes.position.needsUpdate = true
-  })
-
-  return (
-    <points ref={points} geometry={geometry} frustumCulled={false}>
-      <pointsMaterial ref={material} size={2.5} sizeAttenuation={false} color={AMBER} />
-    </points>
-  )
-}
-
-/** Fits the fixed isometric view to the canvas: zoom to the scene's projected bounds, then recentre */
-function FitCamera({ layout }: { layout: Layout }) {
+/** Fits the fixed axonometric view to the canvas: zoom to the scene's projected bounds, then recentre */
+function FitCamera() {
   const camera = useThree((s) => s.camera) as THREE.OrthographicCamera
   const size = useThree((s) => s.size)
   const invalidate = useThree((s) => s.invalidate)
-  const { x0, width, zOf } = layout
 
   useLayoutEffect(() => {
-    const zMin = zOf(ROWS.length - 1) - ROW_GAP / 2
-    const zMax = zOf(0) + ROW_GAP / 2
     camera.position.copy(CAMERA_POSITION)
-    camera.lookAt(0, HEIGHT / 2, 0)
+    camera.lookAt(0, 0, 0)
     camera.updateMatrixWorld()
     const min = new THREE.Vector2(Infinity, Infinity)
     const max = new THREE.Vector2(-Infinity, -Infinity)
     const v = new THREE.Vector3()
-    for (const x of [x0 - 1.2, x0 + width + 1.4])
-      for (const y of [-0.8, HEIGHT + 0.8]) // room for the curl to dip below the floor and rise over the peak
-        for (const z of [zMin, zMax]) {
+    for (const x of [X_LEFT - 1, X_RIGHT]) // left margin keeps the −2.0% tick label on canvas
+      for (const y of [-RAVINE_DEPTH, BOOK_HEIGHT + 0.2])
+        for (const z of [Z_BACK, Z_FRONT + 1.2]) {
           v.set(x, y, z).applyMatrix4(camera.matrixWorldInverse)
           min.min(new THREE.Vector2(v.x, v.y))
           max.max(new THREE.Vector2(v.x, v.y))
         }
     camera.translateX((min.x + max.x) / 2)
     camera.translateY((min.y + max.y) / 2)
-    camera.zoom = Math.min(size.width / (max.x - min.x), size.height / (max.y - min.y)) * 0.94
+    camera.zoom = Math.min(size.width / (max.x - min.x), size.height / (max.y - min.y)) * 0.98
     camera.updateProjectionMatrix()
     invalidate()
-  }, [camera, size, x0, width, zOf, invalidate])
+  }, [camera, size, invalidate])
 
   return null
 }
 
 export default function CascadeGraph3D({
+  assetId,
   metrics,
-  engaged,
+  state,
   className,
 }: {
+  assetId: Market
   metrics: Metrics
-  /** Markets with pause or halt engaged */
-  engaged: Record<Market, boolean>
+  state: LaneState
   className?: string
 }) {
   const reducedMotion = useMemo(
     () => typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches,
     [],
   )
-  const layout = useLayout(metrics)
-  const anchors = useMemo(() => labelAnchors(layout), [layout])
   const labelNodes = useRef(new Map<string, HTMLElement>())
-  const last = metrics.liqHistory.length - 1
-  const summary = `Liquidation cascade over the last ${metrics.liqHistory.length} ticks. Latest: ${metrics.liquidations.toLocaleString('en-US')} per minute total; ${MARKET_LIST.map(
-    (m) => `${m.replace('-PERP', '')} ${metrics.liqByMarket[m][last].toLocaleString('en-US')}`,
-  ).join(', ')}. Compounding at ×${metrics.growth.toFixed(2)} per tick; vortex at ${Math.round(vortexStrength(metrics.growth) * 100)}%.`
+  const severity = metrics.severity
+
+  // One shockwave per liquidation spike in this market, sized by the relative jump
+  const series = metrics.liqByMarket[assetId]
+  const shock = useMemo(() => {
+    const now = series[series.length - 1]
+    const prev = series[series.length - 2] ?? now
+    const rel = prev > 0 ? (now - prev) / prev : 0
+    return { id: series, amp: rel > 0.02 ? Math.min(1, 0.3 + rel * 3) : 0 }
+  }, [series])
+
+  const summary =
+    state === 'live'
+      ? `${assetId} bid-side order book, historical replay tick ${metrics.replayTick} (${metrics.replayPhase}): severity ${severity.toFixed(2)}.`
+      : `${assetId} bid-side order book: circuit breaker, ${state}. Surface flat.`
 
   return (
-    <div className={cn('relative', className)} role="img" aria-label={summary}>
+    <div className={cn('relative bg-black', className)} role="img" aria-label={summary}>
       <Canvas
         orthographic
         camera={{ position: CAMERA_POSITION.toArray(), zoom: 30, near: -200, far: 200 }}
@@ -439,17 +554,20 @@ export default function CascadeGraph3D({
         dpr={[1, 2]}
         flat
         linear
-        gl={{ antialias: true, alpha: true }}
+        gl={{ antialias: true }}
         fallback={<p className="p-3 font-mono text-[11px] text-gray-500">WebGL unavailable. {summary}</p>}
       >
-        <FitCamera layout={layout} />
-        <Floor layout={layout} />
-        <ThresholdPlane layout={layout} />
-        <VortexMesh layout={layout} metrics={metrics} animate={!reducedMotion} />
-        <FallingPoints layout={layout} metrics={metrics} engaged={engaged} animate={!reducedMotion} />
-        <ProjectLabels anchors={anchors} nodes={labelNodes} />
+        <color attach="background" args={['#000000']} />
+        <FitCamera />
+        <Frame />
+        <Surface assetId={assetId} target={severity} state={state} shock={shock} animate={!reducedMotion} />
+        {/* Text suspends while its font loads; keep that from blanking the surface */}
+        <Suspense fallback={null}>
+          <BreakerBanner state={state} animate={!reducedMotion} />
+        </Suspense>
+        <ProjectLabels nodes={labelNodes} />
       </Canvas>
-      {anchors.map((a) => (
+      {ANCHORS.map((a) => (
         <span
           key={a.key}
           ref={(el) => {

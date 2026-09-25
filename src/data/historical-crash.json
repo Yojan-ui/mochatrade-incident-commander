@@ -1,0 +1,502 @@
+[
+ {
+  "tick": 1,
+  "severity": 0.104,
+  "liquidationVol": 1334402
+ },
+ {
+  "tick": 2,
+  "severity": 0.089,
+  "liquidationVol": 1129614
+ },
+ {
+  "tick": 3,
+  "severity": 0.117,
+  "liquidationVol": 1397485
+ },
+ {
+  "tick": 4,
+  "severity": 0.085,
+  "liquidationVol": 1032410
+ },
+ {
+  "tick": 5,
+  "severity": 0.063,
+  "liquidationVol": 820306
+ },
+ {
+  "tick": 6,
+  "severity": 0.066,
+  "liquidationVol": 909409
+ },
+ {
+  "tick": 7,
+  "severity": 0.099,
+  "liquidationVol": 1213454
+ },
+ {
+  "tick": 8,
+  "severity": 0.097,
+  "liquidationVol": 1021370
+ },
+ {
+  "tick": 9,
+  "severity": 0.099,
+  "liquidationVol": 1097820
+ },
+ {
+  "tick": 10,
+  "severity": 0.099,
+  "liquidationVol": 1105926
+ },
+ {
+  "tick": 11,
+  "severity": 0.103,
+  "liquidationVol": 1112162
+ },
+ {
+  "tick": 12,
+  "severity": 0.067,
+  "liquidationVol": 854176
+ },
+ {
+  "tick": 13,
+  "severity": 0.07,
+  "liquidationVol": 1026618
+ },
+ {
+  "tick": 14,
+  "severity": 0.087,
+  "liquidationVol": 1143077
+ },
+ {
+  "tick": 15,
+  "severity": 0.072,
+  "liquidationVol": 980115
+ },
+ {
+  "tick": 16,
+  "severity": 0.091,
+  "liquidationVol": 957195
+ },
+ {
+  "tick": 17,
+  "severity": 0.109,
+  "liquidationVol": 1101684
+ },
+ {
+  "tick": 18,
+  "severity": 0.098,
+  "liquidationVol": 1263763
+ },
+ {
+  "tick": 19,
+  "severity": 0.115,
+  "liquidationVol": 1308214
+ },
+ {
+  "tick": 20,
+  "severity": 0.066,
+  "liquidationVol": 904333
+ },
+ {
+  "tick": 21,
+  "severity": 0.116,
+  "liquidationVol": 1294291
+ },
+ {
+  "tick": 22,
+  "severity": 0.127,
+  "liquidationVol": 1271555
+ },
+ {
+  "tick": 23,
+  "severity": 0.147,
+  "liquidationVol": 1512604
+ },
+ {
+  "tick": 24,
+  "severity": 0.16,
+  "liquidationVol": 1734401
+ },
+ {
+  "tick": 25,
+  "severity": 0.185,
+  "liquidationVol": 2006845
+ },
+ {
+  "tick": 26,
+  "severity": 0.205,
+  "liquidationVol": 2524798
+ },
+ {
+  "tick": 27,
+  "severity": 0.207,
+  "liquidationVol": 2437366
+ },
+ {
+  "tick": 28,
+  "severity": 0.253,
+  "liquidationVol": 2999500
+ },
+ {
+  "tick": 29,
+  "severity": 0.261,
+  "liquidationVol": 4170154
+ },
+ {
+  "tick": 30,
+  "severity": 0.294,
+  "liquidationVol": 4383392
+ },
+ {
+  "tick": 31,
+  "severity": 0.341,
+  "liquidationVol": 5151310
+ },
+ {
+  "tick": 32,
+  "severity": 0.403,
+  "liquidationVol": 7898692
+ },
+ {
+  "tick": 33,
+  "severity": 0.439,
+  "liquidationVol": 9210209
+ },
+ {
+  "tick": 34,
+  "severity": 0.47,
+  "liquidationVol": 10734330
+ },
+ {
+  "tick": 35,
+  "severity": 0.566,
+  "liquidationVol": 16194735
+ },
+ {
+  "tick": 36,
+  "severity": 0.58,
+  "liquidationVol": 16458746
+ },
+ {
+  "tick": 37,
+  "severity": 0.696,
+  "liquidationVol": 23454985
+ },
+ {
+  "tick": 38,
+  "severity": 0.782,
+  "liquidationVol": 32488921
+ },
+ {
+  "tick": 39,
+  "severity": 0.798,
+  "liquidationVol": 32977964
+ },
+ {
+  "tick": 40,
+  "severity": 0.948,
+  "liquidationVol": 57010527
+ },
+ {
+  "tick": 41,
+  "severity": 0.942,
+  "liquidationVol": 43305806
+ },
+ {
+  "tick": 42,
+  "severity": 0.963,
+  "liquidationVol": 57888965
+ },
+ {
+  "tick": 43,
+  "severity": 1,
+  "liquidationVol": 52311810
+ },
+ {
+  "tick": 44,
+  "severity": 1,
+  "liquidationVol": 62795174
+ },
+ {
+  "tick": 45,
+  "severity": 1,
+  "liquidationVol": 50687485
+ },
+ {
+  "tick": 46,
+  "severity": 0.964,
+  "liquidationVol": 48355007
+ },
+ {
+  "tick": 47,
+  "severity": 0.99,
+  "liquidationVol": 59000767
+ },
+ {
+  "tick": 48,
+  "severity": 0.985,
+  "liquidationVol": 52998533
+ },
+ {
+  "tick": 49,
+  "severity": 0.953,
+  "liquidationVol": 50834018
+ },
+ {
+  "tick": 50,
+  "severity": 0.896,
+  "liquidationVol": 47531533
+ },
+ {
+  "tick": 51,
+  "severity": 0.9,
+  "liquidationVol": 40789521
+ },
+ {
+  "tick": 52,
+  "severity": 0.88,
+  "liquidationVol": 47335870
+ },
+ {
+  "tick": 53,
+  "severity": 0.824,
+  "liquidationVol": 32405061
+ },
+ {
+  "tick": 54,
+  "severity": 0.777,
+  "liquidationVol": 28430258
+ },
+ {
+  "tick": 55,
+  "severity": 0.869,
+  "liquidationVol": 45180928
+ },
+ {
+  "tick": 56,
+  "severity": 0.875,
+  "liquidationVol": 47176098
+ },
+ {
+  "tick": 57,
+  "severity": 0.867,
+  "liquidationVol": 38771220
+ },
+ {
+  "tick": 58,
+  "severity": 0.884,
+  "liquidationVol": 40270468
+ },
+ {
+  "tick": 59,
+  "severity": 0.967,
+  "liquidationVol": 52381425
+ },
+ {
+  "tick": 60,
+  "severity": 0.984,
+  "liquidationVol": 57479733
+ },
+ {
+  "tick": 61,
+  "severity": 0.97,
+  "liquidationVol": 58170481
+ },
+ {
+  "tick": 62,
+  "severity": 1,
+  "liquidationVol": 55996961
+ },
+ {
+  "tick": 63,
+  "severity": 1,
+  "liquidationVol": 61165713
+ },
+ {
+  "tick": 64,
+  "severity": 1,
+  "liquidationVol": 50683006
+ },
+ {
+  "tick": 65,
+  "severity": 1,
+  "liquidationVol": 54261790
+ },
+ {
+  "tick": 66,
+  "severity": 1,
+  "liquidationVol": 47959108
+ },
+ {
+  "tick": 67,
+  "severity": 1,
+  "liquidationVol": 64148287
+ },
+ {
+  "tick": 68,
+  "severity": 0.964,
+  "liquidationVol": 55199236
+ },
+ {
+  "tick": 69,
+  "severity": 0.922,
+  "liquidationVol": 45693649
+ },
+ {
+  "tick": 70,
+  "severity": 0.913,
+  "liquidationVol": 41354454
+ },
+ {
+  "tick": 71,
+  "severity": 0.879,
+  "liquidationVol": 48277474
+ },
+ {
+  "tick": 72,
+  "severity": 0.899,
+  "liquidationVol": 46895953
+ },
+ {
+  "tick": 73,
+  "severity": 0.872,
+  "liquidationVol": 41243127
+ },
+ {
+  "tick": 74,
+  "severity": 0.916,
+  "liquidationVol": 41521586
+ },
+ {
+  "tick": 75,
+  "severity": 0.956,
+  "liquidationVol": 57364465
+ },
+ {
+  "tick": 76,
+  "severity": 0.925,
+  "liquidationVol": 45281631
+ },
+ {
+  "tick": 77,
+  "severity": 0.918,
+  "liquidationVol": 43343111
+ },
+ {
+  "tick": 78,
+  "severity": 0.961,
+  "liquidationVol": 46603484
+ },
+ {
+  "tick": 79,
+  "severity": 0.901,
+  "liquidationVol": 47214412
+ },
+ {
+  "tick": 80,
+  "severity": 0.939,
+  "liquidationVol": 47591207
+ },
+ {
+  "tick": 81,
+  "severity": 0.954,
+  "liquidationVol": 44511422
+ },
+ {
+  "tick": 82,
+  "severity": 0.893,
+  "liquidationVol": 40521214
+ },
+ {
+  "tick": 83,
+  "severity": 0.858,
+  "liquidationVol": 34801524
+ },
+ {
+  "tick": 84,
+  "severity": 0.896,
+  "liquidationVol": 39384598
+ },
+ {
+  "tick": 85,
+  "severity": 0.836,
+  "liquidationVol": 35046844
+ },
+ {
+  "tick": 86,
+  "severity": 0.849,
+  "liquidationVol": 42283372
+ },
+ {
+  "tick": 87,
+  "severity": 0.82,
+  "liquidationVol": 31718297
+ },
+ {
+  "tick": 88,
+  "severity": 0.919,
+  "liquidationVol": 46502131
+ },
+ {
+  "tick": 89,
+  "severity": 0.894,
+  "liquidationVol": 40998605
+ },
+ {
+  "tick": 90,
+  "severity": 0.938,
+  "liquidationVol": 53188031
+ },
+ {
+  "tick": 91,
+  "severity": 0.966,
+  "liquidationVol": 48991653
+ },
+ {
+  "tick": 92,
+  "severity": 1,
+  "liquidationVol": 50667744
+ },
+ {
+  "tick": 93,
+  "severity": 1,
+  "liquidationVol": 48911059
+ },
+ {
+  "tick": 94,
+  "severity": 1,
+  "liquidationVol": 63157187
+ },
+ {
+  "tick": 95,
+  "severity": 0.994,
+  "liquidationVol": 57100301
+ },
+ {
+  "tick": 96,
+  "severity": 0.942,
+  "liquidationVol": 53105917
+ },
+ {
+  "tick": 97,
+  "severity": 0.92,
+  "liquidationVol": 45778781
+ },
+ {
+  "tick": 98,
+  "severity": 0.945,
+  "liquidationVol": 51768970
+ },
+ {
+  "tick": 99,
+  "severity": 0.931,
+  "liquidationVol": 41962645
+ },
+ {
+  "tick": 100,
+  "severity": 0.891,
+  "liquidationVol": 43313433
+ }
+]

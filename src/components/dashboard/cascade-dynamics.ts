@@ -1,20 +1,20 @@
-// Shared by the 3D mesh and the panel readout, so the numbers on screen are
-// exactly the ones driving the geometry. Kept free of three.js so importing it
-// doesn't pull the 3D chunk into the main bundle.
+// Shared by the 3D order-book view and the panel readout, so the numbers on
+// screen are exactly the ones driving the geometry. Kept free of three.js so
+// importing it doesn't pull the 3D chunk into the main bundle.
+import type { Market } from './use-incident-sim'
 
-/** Compounded per-tick growth at which the vortex reaches full strength */
-export const FULL_VORTEX_GROWTH = 1.35
+/** Markets drawn as lanes in the 3D limit-order-book surface, front to back */
+export const CASCADE_LANES: readonly Market[] = ['BTC-PERP', 'ETH-PERP', 'SOL-PERP']
 
-/** Angular velocity of the rolling spiral, radians per second */
-export const BASE_OMEGA = 1.2
-export const SEV1_OMEGA_MULTIPLIER = 3
+/** A lane's circuit-breaker state: live, liquidations paused, or trading halted */
+export type LaneState = 'live' | 'paused' | 'halted'
 
-/** 0 when the cascade is flat or shrinking, 1 at FULL_VORTEX_GROWTH or above */
-export function vortexStrength(growth: number) {
-  if (growth <= 1) return 0
-  return Math.min(1, Math.log(growth) / Math.log(FULL_VORTEX_GROWTH))
-}
-
-export function vortexOmega(critical: boolean) {
-  return BASE_OMEGA * (critical ? SEV1_OMEGA_MULTIPLIER : 1)
+/**
+ * Share of bid-side liquidity lost near mid, 0 (intact book) to 1 (gone).
+ * Saturating in the market's stress: at threshold pace (stress 1) the lane is
+ * ~55% collapsed, at double pace ~80%. A lane behind a circuit breaker is 0.
+ */
+export function collapseDepth(stress: number, state: LaneState) {
+  if (state !== 'live') return 0
+  return 1 - Math.exp(-0.8 * Math.max(0, stress))
 }

@@ -1,25 +1,32 @@
-import { Suspense, lazy, useState } from 'react'
+import { useState } from 'react'
 import { Headset, Zap } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { SEV1_OMEGA_MULTIPLIER, vortexStrength } from './cascade-dynamics'
-import { LIQUIDATION_THRESHOLD, MARKET_LIST, type Market, type Metrics } from './use-incident-sim'
-
-// three.js only loads with the panel, keeping it out of the main bundle
-const CascadeGraph3D = lazy(() => import('./cascade-graph-3d'))
+import {
+  LIQUIDATION_THRESHOLD,
+  MARKET_LIST,
+  STALE_REF_SLIP,
+  STALE_REF_VOLATILITY,
+  US_STOCK_PERPS,
+  formatMarketList,
+  type Market,
+  type Metrics,
+} from './use-incident-sim'
 
 const intFmt = (v: number) => Math.round(v).toLocaleString('en-US')
 const priceFmt = (v: number) => v.toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 })
 
-function Sparkline({
+export function Sparkline({
   values,
   threshold,
   critical,
   label,
+  format = (v) => v.toLocaleString('en-US'),
 }: {
   values: number[]
   threshold?: number
   critical: boolean
   label: string
+  format?: (v: number) => string
 }) {
   const [hover, setHover] = useState<number | null>(null)
   const max = Math.max(...values, (threshold ?? 0) * 1.15, 1)
@@ -70,7 +77,7 @@ function Sparkline({
       />
       <div className="mt-2 flex justify-between font-mono text-[10px] text-gray-500">
         <span>{hover === null ? `${values.length} ticks` : `t-${last - hover}`}</span>
-        <span className="text-white">{values[shown].toLocaleString('en-US')}</span>
+        <span className="text-white">{format(values[shown])}</span>
       </div>
     </div>
   )
@@ -170,7 +177,6 @@ export function SignalNode({
   const stoppedCount = MARKET_LIST.filter((m) => isPaused[m] || isHalted[m]).length
   const haltedCount = MARKET_LIST.filter((m) => isHalted[m]).length
   const total = MARKET_LIST.length
-  const engaged = Object.fromEntries(MARKET_LIST.map((m) => [m, isPaused[m] || isHalted[m]])) as Record<Market, boolean>
 
   return (
     <section
@@ -231,34 +237,20 @@ export function SignalNode({
         </div>
       </div>
 
-      <div className="border-t border-white/10">
-        <div className="flex h-7 items-center justify-between px-2.5 text-[11px]">
-          <span className="flex items-center gap-3">
-            <span className="text-gray-400">Cascade by market</span>
-            {/* The exact inputs driving the mesh distortion */}
-            <span className="hidden font-mono text-[10px] text-gray-500 tabular-nums sm:inline">
-              growth <span className="text-white">×{metrics.growth.toFixed(2)}</span>/tick
-              <span className="mx-1.5 text-gray-700">|</span>
-              vortex <span className="text-white">{Math.round(vortexStrength(metrics.growth) * 100)}%</span>
-              <span className="mx-1.5 text-gray-700">|</span>
-              spin <span className={critical ? 'text-crit' : 'text-white'}>{critical ? SEV1_OMEGA_MULTIPLIER : 1}×</span>
-            </span>
+      {metrics.usEquityClosed && (
+        <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 border-t border-warn/50 bg-warn/[0.06] px-2.5 py-1.5">
+          <span className="rounded-sm bg-warn px-1.5 py-0.5 font-mono text-[11px] font-bold text-black">
+            US EQUITY MARKETS: CLOSED (OFF-HOURS)
           </span>
-          <span className="flex items-center gap-3 font-mono text-[10px] text-gray-500">
-            <span className="flex items-center gap-1.5">
-              <span className="size-2 bg-warn" aria-hidden />
-              &lt; {LIQUIDATION_THRESHOLD}/min
-            </span>
-            <span className="flex items-center gap-1.5">
-              <span className="size-2 bg-crit" aria-hidden />
-              SEV-1
-            </span>
+          <span className="font-mono text-[11px] text-warn">
+            {formatMarketList(US_STOCK_PERPS)} on stale reference price
+            <span className="mx-1.5 text-warn/50">|</span>
+            volatility ×{STALE_REF_VOLATILITY}
+            <span className="mx-1.5 text-warn/50">|</span>
+            slip ×{STALE_REF_SLIP}
           </span>
         </div>
-        <Suspense fallback={<div className="h-[240px] md:h-[320px]" />}>
-          <CascadeGraph3D metrics={metrics} engaged={engaged} className="h-[240px] w-full md:h-[320px]" />
-        </Suspense>
-      </div>
+      )}
 
       <dl className="grid grid-cols-3 border-t border-white/10 md:grid-cols-6 [&>*]:border-white/10 [&>*:not(:nth-child(3n+1))]:border-l [&>*:nth-child(n+4)]:border-t md:[&>*:nth-child(n+4)]:border-t-0 md:[&>*:nth-child(4)]:border-l">
         <Stat label="Threshold load" value={`${Math.round(load * 100)}%`} tone={load >= 1 ? 'crit' : load >= 0.8 ? 'warn' : undefined} />
