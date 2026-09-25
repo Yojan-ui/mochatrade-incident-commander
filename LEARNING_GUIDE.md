@@ -132,10 +132,11 @@ The dashboard puts all five on one screen.
 │  Live signals ($ vol, tkts)  │  3D order book            │                          │
 │  Market controls matrix      │  + Pause / Halt           │                          │
 │  Broadcast                   │                           │                          │
-│  Comms triage                │                           │                          │
-│  Fault-vs-market ruling      │                           │                          │
-│  Incident log                │                           │                          │
+│  Comms triage                │  (intensity from a        │                          │
+│  Fault-vs-market ruling      │   historical crash replay)│                          │
+│  Incident log + PDF export   │                           │                          │
 └──────────────────────────────┴───────────────────────────┴──────────────────────────┘
+ [SPACE]/[⌘K] PAUSE ALL CASCADING   [1]–[4] SWITCH ASSET   [ENTER] PRESS FOCUSED BUTTON
 ```
 
 ### 2.3 What each part is for
@@ -143,13 +144,13 @@ The dashboard puts all five on one screen.
 |---|---|
 | Meltdown signals, Live signals | **Detect** |
 | SEV badge/banner, SEV-1 ESCALATION, SLA timer | **Escalate** (and time pressure) |
-| Market controls, asset-tab buttons | **Act** |
+| Market controls, asset-tab buttons, hotkeys | **Act** |
 | Broadcast, Comms triage | **Communicate** |
-| Ruling, Incident log, Incident stream | **Record** and decide who pays |
+| Ruling, Incident log, PDF post-mortem, Incident stream | **Record** and decide who pays |
 | 3D order book | Makes the damage (and the fix) *visible* |
 
 ### 2.4 Important honesty
-All data is **simulated** by one engine so the demo always works. The screens are built so real data can replace the engine later (Part 7.1 and `PROJECT_EXPLAINED.md` section 6).
+All data is **simulated** so the demo always works: the counters come from a random model, and the 3D order book follows a **recorded (mock) crash replay**. The screens are built so real data can replace the engine later (Part 7.1 and `PROJECT_EXPLAINED.md` section 6).
 
 ---
 
@@ -214,7 +215,11 @@ The 3D library (three.js) is large (~1 MB). It's loaded **only when you open an 
 ```ts
 const CascadeGraph3D = lazy(() => import('./cascade-graph-3d'))
 ```
-So the first page load stays small (~415 KB).
+The PDF library (jsPDF, ~400 KB) is loaded the same way, the first time someone clicks **GENERATE POST-MORTEM**:
+```ts
+const { jsPDF } = await import('jspdf')
+```
+So the first page load stays small (~452 KB).
 
 ---
 
@@ -227,17 +232,18 @@ So the first page load stays small (~415 KB).
    metrics         controls            logs          ledger
  (all numbers)  (pause/halt state)  (stream lines)  (decision log)
       │               │                 │              │
-  every panel reads these; buttons call toggleControl / sendBroadcast / record
+  every panel reads these; buttons and hotkeys call toggleControl / pauseAllCascading / sendBroadcast / record
 ```
 **Rule:** components never invent numbers. They only display what the hook gives them. That's why nothing on screen can disagree.
 
-### 4.2 Two clocks
-The engine runs two independent timers:
+### 4.2 Three clocks
+The engine runs three independent timers:
 
 | Clock | How often | What it does |
 |---|---|---|
-| **Counter tick** | every 2–3 s (random) | new liquidation counts per market, tickets, USD volume, escalation checks |
+| **Counter tick** | every 2–3 s (random) | new liquidation counts per market, tickets, USD volume, running totals, escalation checks |
 | **Price step** | every 850 ms | prices fall for markets still cascading; maybe log one liquidation event |
+| **Replay tick** | every 500 ms | steps to the next row of `src/data/historical-crash.json`; its `severity` drives the 3D view |
 
 ### 4.3 One counter tick, step by step (`step()` in `use-incident-sim.ts`)
 1. **Read the latest state** from refs: previous metrics, and which markets are paused or halted.
@@ -269,8 +275,9 @@ click ─► toggleControl('ETH-PERP', 'halt')
 
 next price steps : ETH skipped            → ETH price frozen
 next counter tick: ETH growth = 0.35–0.55 → ETH liquidations collapse
-3D view          : breaker on             → surface snaps flat + cyan, banner blinks
+3D view          : breaker on             → uSeverity = 0 this frame: surface snaps flat + cyan, banner blinks
 ```
+**Pressing SPACE** does the same thing with "pause", for every market still cascading, in one keystroke (`pauseAllCascading()`). It writes one "Global pause via [SPACE]" log entry first.
 (The 650 ms delay simulates waiting for the exchange's engine to confirm.)
 
 ### 4.6 Why `snapshot()` is the most important function
@@ -358,6 +365,8 @@ Stress 1.0 = "this market alone is running at SEV-1 pace."
 
 This saturating shape is common for anything that "fills up" toward a limit.
 
+**Where it's used now:** the colour of each asset tab's status lamp (green < 20%, yellow < 50%, red ≥ 50%). The 3D view no longer uses it; its intensity comes from the replay (Part 5.13).
+
 ### 5.8 USD volume and ticket velocity
 ```
 Volume per minute = Σ over markets ( liquidations × typical size × price )
@@ -375,7 +384,7 @@ To move smoothly toward a target instead of jumping:
 value = value + (target − value) × (1 − e^(−k × Δt))
 ```
 Every frame, you close a fixed *fraction* of the remaining gap. Time to get 95% of the way = `ln 20 / k`.
-- 3D collapse: `k = 0.6` → **5 s** to cave in; `k = 0.75` → **4 s** to recover.
+- 3D severity: `k = 2.5` → about **1.2 s** to reach each new replay value. That's short enough to stay on the replay's timeline (a new tick every 0.5 s), but long enough to hide the jumps.
 - The circuit breaker **skips** this and sets the value to 0 immediately. That's why it "snaps".
 
 ### 5.10 Thresholds and flags
@@ -411,6 +420,32 @@ remaining = ceil((deadline − now) / 1000)  seconds
 The number is always recomputed from the real clock, so it's always correct.
 
 ---
+
+### 5.13 The historical replay (what drives the 3D view)
+The file `src/data/historical-crash.json` is a list of 100 rows, one per tick:
+```json
+{ "tick": 35, "severity": 0.566, "liquidationVol": 16190000 }
+```
+- `severity` (0 to 1) is how violent the crash is at that moment.
+- `liquidationVol` is dollars liquidated per minute.
+
+The three phases:
+```
+ticks 1–20   PRE-CRASH     severity ≈ 0.06–0.12            (calm)
+ticks 21–40  FLASH CRASH   severity = 0.1 × e^(0.113 × (tick − 20))    (exponential spike)
+ticks 41–100 SUSTAINED     severity ≈ 0.78–1.00 (average 0.93), random swings
+```
+- **The spike rate:** `0.113 = ln(0.95 / 0.1) / 20`, chosen so the crash climbs from 0.1 to 0.95 in exactly 20 ticks.
+- **Timing:** each tick lasts 500 ms, so the whole story takes 50 s and then loops.
+- **Volume:** `liquidationVol ≈ ($0.8M + $55M × severity^2.2) × noise`. The power 2.2 makes volume grow faster than severity, because cascades compound.
+- **Reproducible:** the file comes from `scripts/generate-historical-crash.mjs`, which uses a **seeded** random generator (mulberry32), so running it again produces exactly the same file.
+
+### 5.14 Running totals (area under a rate)
+The dashboard knows *rates* (dollars per minute), but the post-mortem needs a *total*. Each tick adds `rate × time elapsed`:
+```
+total = total + rate × (minutes since the last tick)
+```
+Adding up thin rectangles under the rate curve like this is the idea behind integration (it's called a Riemann sum). Totals count from when the dashboard started monitoring, and the report says so.
 
 # Part 6 · 3D graphics from the basics
 
@@ -449,7 +484,7 @@ Big layers make the broad canyons; small layers add roughness. That's how real t
 **Ridged noise** uses `(1 − |noise|)²`, which turns the smooth zero-crossings into **sharp creases**: the cracks.
 
 ### 6.8 How one vertex gets its height (the recipe)
-For each point at distance `d` from mid (0 = mid, 1 = 2% below mid):
+For each point at distance `d` from mid (0 = mid, 1 = 2% below mid), with `sev` = the replay's current severity (eased, Part 5.9):
 ```
 1. healthy  = H × (0.22 + 0.78 × (1 − e^(−d/0.28)))     normal cumulative bid depth
 2. nearMid  = e^(−d/0.38)                                damage concentrates near mid
@@ -492,14 +527,20 @@ three.js draws **solid** objects first and **transparent** ones after. The torn 
 - **Constants:** thresholds (500, $10M, 500 tickets), prices, beta, share, position sizes, the stale-reference multipliers.
 - **Helpers:** `rand`, `byMarket` (do something for each market), `push` (keep the last 28 values), `seedExponential` (a realistic starting history), `splitByMarket`.
 - **`snapshot()`:** computes every derived number (Part 4.6).
-- **`useIncidentSim()`:** holds state, runs the two clocks, and provides:
-  - `toggleControl(market, 'pause' | 'halt')`, `sendBroadcast()`
+- **Replay:** imports `historical-crash.json` and exposes `metrics.severity`, `metrics.liquidationVol`, `metrics.replayTick` and `metrics.replayPhase`.
+- **Running totals:** `metrics.cumLiqVolumeUsd`, `cumLiquidations` and `peakLiqVolumeUsd` for the post-mortem.
+- **`useIncidentSim()`:** holds state, runs the three clocks, and provides:
+  - `toggleControl(market, 'pause' | 'halt')`, `pauseAllCascading(source)`, `sendBroadcast()`
   - `record(kind, text, actor)`: the only way to write to the log
   - `metrics`, `controls`, `isPaused`, `isHalted`, `logs`, `ledger`
+- **`verifyLedger()`:** recomputes the hash chain, used by the log panel and the PDF.
 - **Integration point:** replace this hook with one fed by real data, keeping the same `Metrics` shape.
 
 ### 7.2 `src/App.tsx`: the layout
-Header (title, SEV badge, Open timer, **SLA countdown** with its editable input), the SEV-1 banner, the signals panel, the **tab bar** (`selectedAsset` state), the Overview panels (kept mounted but hidden so the ruling answers survive tab switches), the asset panel, and the incident stream.
+Header (title, SEV badge, Open timer, **SLA countdown** with its editable input), the SEV-1 banner, the signals panel, the **tab bar** (`selectedAsset` state), the Overview panels (kept mounted but hidden so the ruling answers survive tab switches), the asset panel, and the incident stream. It also holds:
+- the **hotkeys** (`useHotkeys`: Space/⌘K, 1–4, ignored while typing) and the legend at the bottom;
+- the current **ruling** (lifted up from the ruling panel so the PDF can read it);
+- the **SLA minutes**.
 
 ### 7.3 The panels
 | File | What it shows | Worth studying for |
@@ -509,12 +550,20 @@ Header (title, SEV badge, Open timer, **SLA countdown** with its editable input)
 | `action-grid.tsx` | per-market control matrix, broadcast | reusable `ControlButton` |
 | `comms-triage.tsx` | templates, `[ASSET]`/`[TIME]` filling, staging, copy | turning state into text; clipboard fallback |
 | `decision-matrix.tsx` | two yes/no checks → ruling | a tiny decision tree (`rulingFor`) |
-| `incident-log.tsx` | hash-chained ledger, notes, export | `verifyChain`, file download |
+| `incident-log.tsx` | hash-chained ledger, notes, `.log` export, **GENERATE POST-MORTEM** | creating a jsPDF document on click |
+| `postmortem.ts` | the report's facts and PDF layout | Y-axis pagination, keeping entries together |
 | `incident-stream.tsx` | live terminal feed, follows the tail | auto-scroll that respects the reader |
 | `asset-tabs.tsx` | tab bar with status lights | accessible keyboard tabs |
 | `cascade-panel.tsx` | asset view wrapper + buttons | lazy loading the 3D |
-| `cascade-graph-3d.tsx` | the GLSL order-book surface | shaders, uniforms, noise |
-| `cascade-dynamics.ts` | `collapseDepth()`, `CASCADE_LANES` | sharing one formula between 2D and 3D |
+| `cascade-graph-3d.tsx` | the GLSL order-book surface, driven by replay severity | shaders, uniforms, noise |
+| `cascade-dynamics.ts` | `collapseDepth()` (tab lamps), `CASCADE_LANES` | one shared formula |
+
+Data and tooling:
+
+| File | What it is |
+|---|---|
+| `src/data/historical-crash.json` | the 100-tick crash replay |
+| `scripts/generate-historical-crash.mjs` | seeded generator that writes the replay file |
 
 ### 7.4 `src/index.css`
 Colour tokens (`--color-crit`, `--color-ok`, …), fonts, and small animations (the moving packets on the connector lines, the escalation blink). Every animation turns off if the user prefers reduced motion.
@@ -531,12 +580,13 @@ Run `npm run dev`, open the page, then edit a number and save. The page reloads 
 | 2 | `use-incident-sim.ts` → `LIQUIDATION_THRESHOLD = 500` | `300` | Everything keyed to the threshold moves together, because it's one constant |
 | 3 | `use-incident-sim.ts` → `STALE_REF_VOLATILITY = 1.8` | `4` | NVDA/TSLA prices dive far faster: the stale-reference risk |
 | 4 | `use-incident-sim.ts` → `US_EQUITY_CLOSED = true` | `false` | The amber tag, STALE REF labels and multipliers all disappear |
-| 5 | `cascade-dynamics.ts` → `-0.8 *` | `-2 *` | The 3D book collapses much harder at the same stress |
+| 5 | `scripts/generate-historical-crash.mjs` → `const PEAK = 0.95`, then run `node scripts/generate-historical-crash.mjs` | `0.5` | A milder recorded crash: the 3D book barely tears (the replay drives it) |
 | 6 | `cascade-graph-3d.tsx` → `uTime * 0.06` | `uTime * 0.6` | The terrain churns 10× faster (why we slowed it down) |
-| 7 | `cascade-graph-3d.tsx` → `EASE_DOWN = 0.6` | `6` | The cave-in becomes near-instant instead of 5 s |
+| 7 | `cascade-graph-3d.tsx` → `SEVERITY_EASE = 2.5` | `0.3` | The surface lags seconds behind the replay's timeline (why the ease is short) |
 | 8 | `cascade-graph-3d.tsx` → `SEG_X = 320`, `SEG_Z = 128` | `60`, `24` | Fewer vertices: blocky polygons (why density matters) |
 | 9 | `use-incident-sim.ts` → `(broadcasted ? 0.35 : 1)` | `0.9` | Broadcasting barely helps: tickets keep climbing |
 | 10 | `cascade-graph-3d.tsx` → `SHOCK_LIFE = 5` | `1` | Shockwaves vanish quickly: a tremor becomes a flicker |
+| 11 | `use-incident-sim.ts` → `REPLAY_TICK_MS = 500` | `2000` | The recorded crash plays 4× slower (a 200 s story) |
 
 **Tip:** run `npx tsc -b` after edits. If it prints nothing, the types are fine.
 
@@ -558,6 +608,12 @@ Run `npm run dev`, open the page, then edit a number and save. The page reloads 
 | **Fragment shader** | GPU program that picks each pixel's colour |
 | **GLSL** | The language shaders are written in |
 | **Hash / Hash chain** | Short fingerprint of data / fingerprints linked in sequence |
+| **Hotkey** | A keyboard shortcut; here Space/⌘K pauses all cascading markets, 1–4 switch tabs |
+| **jsPDF** | The library that builds the post-mortem PDF in the browser |
+| **Post-mortem** | The after-incident report: what happened, what was decided, what to fix |
+| **Replay** | Playing back recorded data over time; here a 100-tick crash timeline |
+| **Seeded random** | A random generator that produces the same sequence every run |
+| **Severity** | 0–1 intensity of the crash at a replay tick; drives the 3D view |
 | **Hook** | React function for state/effects (`useState`, `useEffect`, …) |
 | **Insurance Fund** | The exchange's money for covering losses |
 | **Leverage** | Borrowing to take a bigger position |
@@ -622,6 +678,15 @@ Run `npm run dev`, open the page, then edit a number and save. The page reloads 
 **Q12. Why is the 3D camera orthographic?**
 <details><summary>Answer</summary>So heights and depths aren't distorted by perspective. It reads like a precise technical chart, not a video game.</details>
 
+**Q13. What drives how violently the 3D order book collapses?**
+<details><summary>Answer</summary>The historical replay's <code>severity</code> for the current tick, eased over ~1 s and fed into the shader's <code>uSeverity</code> uniform, which scales the fBM noise exponentially. A circuit breaker sets it to 0 instantly.</details>
+
+**Q14. Why does pressing Space pause markets even when a button has focus?**
+<details><summary>Answer</summary>If a focused "Resume" button kept Space for itself, the panic key would resume a market instead of pausing everything. So Space is always the global pause (except while typing), and Enter presses a focused button.</details>
+
+**Q15. How is "total liquidation volume" in the PDF computed?**
+<details><summary>Answer</summary>Each tick adds the per-minute volume rate × the minutes since the last tick (a running sum, like the area under the rate curve), counted from when monitoring started.</details>
+
 ---
 
-*If you can answer these 12 questions and explain the 5-step loop (detect → escalate → act → communicate → record), you understand the whole project.*
+*If you can answer these 15 questions and explain the 5-step loop (detect → escalate → act → communicate → record), you understand the whole project.*
