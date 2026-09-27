@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { Suspense, lazy, useCallback, useEffect, useState } from 'react'
 import { AttackMatrix } from '@/components/AttackMatrix'
 import { OneFixCard } from '@/components/OneFixCard'
 import { ScorePanel } from '@/components/ScorePanel'
@@ -8,7 +8,14 @@ import { VectorGrid } from '@/components/VectorGrid'
 import { useReport, type Source } from '@/hooks/useReport'
 import { api } from '@/lib/api'
 import { cn } from '@/lib/cn'
-import type { DemoScenario } from '@/lib/types'
+import type { DemoScenario, VectorId } from '@/lib/types'
+
+// three.js is ~600 KB; load it after the dashboard has painted.
+const DefenseLattice = lazy(() => import('@/components/lattice/DefenseLattice'))
+
+function LatticePlaceholder() {
+  return <div className="panel h-[377px] animate-pulse bg-raised/40 sm:h-[477px]" aria-hidden />
+}
 
 const DEFAULT_SCENARIO = 'startup'
 
@@ -40,6 +47,8 @@ export default function App() {
   const { status, source, report, error, startedAt, load } = useReport()
   const [scenarios, setScenarios] = useState<DemoScenario[]>([])
   const [apiUp, setApiUp] = useState<boolean | null>(null)
+  const [focus, setFocus] = useState<{ id: VectorId; n: number }>()
+  const focusVector = useCallback((id: VectorId) => setFocus((f) => ({ id, n: (f?.n ?? 0) + 1 })), [])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -54,6 +63,7 @@ export default function App() {
 
   const select = useCallback(
     (next: Source) => {
+      setFocus(undefined) // don't re-scroll to a card from the previous report
       writeUrl(next)
       load(next, initial.delayMs)
     },
@@ -61,6 +71,7 @@ export default function App() {
   )
 
   const loading = status === 'loading'
+  const reportKey = report ? `${report.domain}-${report.scanned_at}` : ''
 
   return (
     <div className="min-h-dvh">
@@ -83,18 +94,23 @@ export default function App() {
         {!report && loading && <Skeleton />}
 
         {report && status !== 'error' && (
-          // Keyed by report so per-card expand state resets on a new scan.
           <div
-            key={`${report.domain}-${report.scanned_at}`}
-            className={cn('flex flex-col gap-3 transition-opacity', loading && 'pointer-events-none opacity-40')}
+            className={cn('flex flex-col gap-3 transition-opacity', loading && 'pointer-events-none')}
             aria-busy={loading}
           >
-            <div className="grid gap-3 lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)]">
+            <div className={cn('grid gap-3 lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)]', loading && 'opacity-40')}>
               <ScorePanel report={report} />
-              <OneFixCard report={report} />
+              {/* Keyed so per-report UI state (expanded lists) resets on a new scan */}
+              <OneFixCard key={reportKey} report={report} />
             </div>
-            <AttackMatrix report={report} />
-            <VectorGrid report={report} />
+            {/* Not keyed: the lattice stays mounted so links animate between reports */}
+            <Suspense fallback={<LatticePlaceholder />}>
+              <DefenseLattice report={report} dimmed={loading} onSelectVector={focusVector} />
+            </Suspense>
+            <div className={cn('flex flex-col gap-3', loading && 'opacity-40')}>
+              <AttackMatrix report={report} />
+              <VectorGrid key={reportKey} report={report} focus={focus} />
+            </div>
           </div>
         )}
       </main>

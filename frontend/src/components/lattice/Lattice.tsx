@@ -1,0 +1,402 @@
+import { useFrame, type ThreeEvent } from '@react-three/fiber'
+import { useEffect, useMemo, useRef } from 'react'
+import * as THREE from 'three'
+import type { Status, VectorId } from '@/lib/types'
+import { makeDotTexture, makeLabelTexture } from './textures'
+
+export interface LatticeNode {
+  id: VectorId
+  abbr: string
+  name: string
+  status: Status
+  summary: string
+}
+
+const HEX: Record<Status, string> = {
+  pass: '#10b981',
+  warn: '#f59e0b',
+  fail: '#ef4444',
+  info: '#64748b',
+  error: '#475569',
+}
+const PALETTE = Object.fromEntries(Object.entries(HEX).map(([k, v]) => [k, new THREE.Color(v)])) as Record<
+  Status,
+  THREE.Color
+>
+// Bloom only picks up colours brighter than 1.0, so these multipliers decide
+// what glows: live links and passing nodes do, unmeasured ones stay dark.
+const GLOW: Record<Status, number> = { pass: 2.6, warn: 1.9, fail: 3, info: 0.5, error: 0.4 }
+
+const ORBIT_R = 3.4
+const CORE_R = 1.15
+const NODE_R = 0.26
+const ORBIT_SPEED = 0.11
+const TILTS = [-0.4, 0, 0.4]
+const PACKETS_PER_LINK = 2
+const UP = new THREE.Vector3(0, 1, 0)
+
+const rand = (min: number, max: number) => min + Math.random() * (max - min)
+
+function nodePosition(i: number, count: number, t: number, out: THREE.Vector3) {
+  const angle = (i / count) * Math.PI * 2 + t * ORBIT_SPEED
+  const tilt = TILTS[i % TILTS.length]
+  const x = Math.cos(angle) * ORBIT_R
+  const z = Math.sin(angle) * ORBIT_R
+  // Point on a flat ring, rotated about X by the ring's tilt, plus a slow bob.
+  return out.set(x, -z * Math.sin(tilt) + 0.12 * Math.sin(t * 0.9 + i * 1.7), z * Math.cos(tilt))
+}
+
+interface NodeAnim {
+  status: Status | null // null until the first frame, so the intro snap plays
+  from: number
+  target: 0 | 1
+  changedAt: number
+  glitchUntil: number
+  nextGlitch: number
+  jitter: THREE.Vector3
+}
+
+/**
+ * 0 = link intact, 1 = fully snapped. Snapping is an under-damped spring
+ * (overshoots, then settles); reconnecting is a clean exponential ease.
+ */
+function breakAmount(a: NodeAnim, t: number): number {
+  const tau = t - a.changedAt
+  if (tau <= 0) return a.from
+  if (a.target === 1) return a.from + (1 - a.from) * (1 - Math.exp(-6 * tau) * Math.cos(14 * tau))
+  return a.from * Math.exp(-7 * tau)
+}
+
+function freshAnim(): NodeAnim {
+  return { status: null, from: 0, target: 0, changedAt: 0, glitchUntil: 0, nextGlitch: 0, jitter: new THREE.Vector3() }
+}
+
+function orbitRing(tilt: number): THREE.LineLoop {
+  const points: THREE.Vector3[] = []
+  for (let k = 0; k < 128; k++) {
+    const a = (k / 128) * Math.PI * 2
+    const z = Math.sin(a) * ORBIT_R
+    points.push(new THREE.Vector3(Math.cos(a) * ORBIT_R, -z * Math.sin(tilt), z * Math.cos(tilt)))
+  }
+  const material = new THREE.LineBasicMaterial({ color: '#1e293b', transparent: true, opacity: 0.8 })
+  return new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(points), material)
+}
+
+// --------------------------------------------------------------------------- //
+
+interface SatelliteRefs {
+  mount: THREE.Group | null // follows the orbit
+  rotor: THREE.Group | null // spins + glitches
+  wire: THREE.MeshBasicMaterial | null
+  heart: THREE.MeshBasicMaterial | null
+}
+
+function Satellite({
+  node,
+  refs,
+  onHover,
+  onSelect,
+}: {
+  node: LatticeNode
+  refs: SatelliteRefs
+  onHover: (id: VectorId | null) => void
+  onSelect: (id: VectorId) => void
+}) {
+  const label = useMemo(() => makeLabelTexture(node.abbr, HEX[node.status]), [node.abbr, node.status])
+  useEffect(() => () => label.dispose(), [label])
+
+  const over = (e: ThreeEvent<PointerEvent>) => {
+    e.stopPropagation()
+    onHover(node.id)
+    document.body.style.cursor = 'pointer'
+  }
+  const out = () => {
+    onHover(null)
+    document.body.style.cursor = ''
+  }
+  useEffect(() => () => void (document.body.style.cursor = ''), [])
+
+  return (
+    <group ref={(g) => void (refs.mount = g)}>
+      <group ref={(g) => void (refs.rotor = g)}>
+        <mesh>
+          <octahedronGeometry args={[NODE_R, 0]} />
+          <meshBasicMaterial ref={(m) => void (refs.wire = m)} wireframe toneMapped={false} />
+        </mesh>
+        <mesh>
+          <octahedronGeometry args={[NODE_R * 0.42, 0]} />
+          <meshBasicMaterial ref={(m) => void (refs.heart = m)} toneMapped={false} />
+        </mesh>
+      </group>
+      {/* Invisible, generous hit target: 1px wireframes are hard to hover. */}
+      <mesh
+        onPointerOver={over}
+        onPointerOut={out}
+        onClick={(e) => {
+          e.stopPropagation()
+          onSelect(node.id)
+        }}
+      >
+        <sphereGeometry args={[NODE_R * 2.2, 12, 12]} />
+        <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+      </mesh>
+      <sprite position={[0, NODE_R + 0.32, 0]} scale={[1.1, 0.275, 1]}>
+        <spriteMaterial map={label} transparent depthWrite={false} toneMapped={false} opacity={0.9} />
+      </sprite>
+    </group>
+  )
+}
+
+// --------------------------------------------------------------------------- //
+
+export function Lattice({
+  nodes,
+  score,
+  hovered,
+  reducedMotion,
+  onHover,
+  onSelect,
+}: {
+  nodes: LatticeNode[]
+  score: number
+  hovered: VectorId | null
+  reducedMotion: boolean
+  onHover: (id: VectorId | null) => void
+  onSelect: (id: VectorId) => void
+}) {
+  const count = nodes.length
+  const live = useRef({ nodes, hovered, score, reducedMotion })
+  useEffect(() => {
+    live.current = { nodes, hovered, score, reducedMotion }
+  }, [nodes, hovered, score, reducedMotion])
+
+  const anims = useRef<NodeAnim[]>([])
+  if (anims.current.length !== count) anims.current = nodes.map(freshAnim)
+  const sats = useMemo<SatelliteRefs[]>(
+    () => Array.from({ length: count }, () => ({ mount: null, rotor: null, wire: null, heart: null })),
+    [count],
+  )
+  const core = useRef<THREE.Group>(null)
+  const coreWire = useRef<THREE.MeshBasicMaterial>(null)
+  const coreHeart = useRef<THREE.MeshBasicMaterial>(null)
+
+  // Two segments per link (core->break, break->node), rewritten every frame.
+  const links = useMemo(() => {
+    const g = new THREE.BufferGeometry()
+    g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(count * 12), 3).setUsage(THREE.DynamicDrawUsage))
+    g.setAttribute('color', new THREE.BufferAttribute(new Float32Array(count * 12), 3).setUsage(THREE.DynamicDrawUsage))
+    return g
+  }, [count])
+  const packets = useMemo(() => {
+    const n = count * PACKETS_PER_LINK * 3
+    const g = new THREE.BufferGeometry()
+    g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(n), 3).setUsage(THREE.DynamicDrawUsage))
+    g.setAttribute('color', new THREE.BufferAttribute(new Float32Array(n), 3).setUsage(THREE.DynamicDrawUsage))
+    return g
+  }, [count])
+  const dot = useMemo(makeDotTexture, [])
+  const rings = useMemo(() => TILTS.map(orbitRing), [])
+  useEffect(
+    () => () => {
+      links.dispose()
+      packets.dispose()
+      dot.dispose()
+      rings.forEach((r) => {
+        r.geometry.dispose()
+        ;(r.material as THREE.Material).dispose()
+      })
+    },
+    [links, packets, dot, rings],
+  )
+
+  const v = useMemo(
+    () => ({
+      pos: new THREE.Vector3(),
+      dir: new THREE.Vector3(),
+      s: new THREE.Vector3(),
+      e: new THREE.Vector3(),
+      a: new THREE.Vector3(),
+      b: new THREE.Vector3(),
+      perp: new THREE.Vector3(),
+      p: new THREE.Vector3(),
+      c: new THREE.Color(),
+    }),
+    [],
+  )
+
+  useFrame(({ clock }) => {
+    const t = clock.elapsedTime
+    const { nodes, hovered, score, reducedMotion } = live.current
+    const motion = reducedMotion ? 0 : 1
+    const lp = links.attributes.position.array as Float32Array
+    const lc = links.attributes.color.array as Float32Array
+    const pp = packets.attributes.position.array as Float32Array
+    const pc = packets.attributes.color.array as Float32Array
+
+    const write = (arr: Float32Array, idx: number, x: number, y: number, z: number) => {
+      arr[idx * 3] = x
+      arr[idx * 3 + 1] = y
+      arr[idx * 3 + 2] = z
+    }
+    const writeVec = (arr: Float32Array, idx: number, vec: THREE.Vector3) => write(arr, idx, vec.x, vec.y, vec.z)
+    const writeCol = (arr: Float32Array, idx: number, col: THREE.Color, k: number) =>
+      write(arr, idx, col.r * k, col.g * k, col.b * k)
+
+    nodes.forEach((node, i) => {
+      const anim = anims.current[i]
+      const failing = node.status === 'fail'
+
+      if (anim.status !== node.status) {
+        const first = anim.status === null
+        anim.from = breakAmount(anim, t)
+        anim.target = failing ? 1 : 0
+        // Stagger so multiple failures snap one after another.
+        anim.changedAt = t + (first ? 0.6 + i * 0.12 : i * 0.05)
+        anim.status = node.status
+      }
+      const broken = reducedMotion ? anim.target : breakAmount(anim, t)
+      const snapped = failing && t > anim.changedAt
+
+      // ---- satellite: orbit, spin, glitch ----
+      nodePosition(i, count, t * motion, v.pos)
+      if (snapped && t > anim.nextGlitch) {
+        anim.glitchUntil = t + rand(0.05, 0.2)
+        anim.nextGlitch = anim.glitchUntil + rand(0.25, 1.2)
+        anim.jitter.set(rand(-1, 1), rand(-1, 1), rand(-1, 1)).multiplyScalar(0.16)
+      }
+      const glitching = snapped && motion > 0 && t < anim.glitchUntil
+      const isHovered = hovered === node.id
+      const sat = sats[i]
+      if (sat.mount) {
+        sat.mount.position.copy(v.pos)
+        if (glitching) sat.mount.position.add(anim.jitter)
+      }
+      if (sat.rotor) {
+        const base = isHovered ? 1.4 : 1
+        if (glitching) sat.rotor.scale.set(base * rand(0.5, 1.6), base * rand(0.4, 1.4), base * rand(0.7, 1.3))
+        else sat.rotor.scale.setScalar(base)
+        sat.rotor.rotation.set(t * 0.4 * motion + i, t * 0.7 * motion + i, glitching ? rand(-0.6, 0.6) : 0)
+      }
+      const glow = GLOW[node.status] * (isHovered ? 1.3 : 1)
+      if (sat.wire) {
+        if (glitching && Math.random() > 0.5) sat.wire.color.setRGB(3, 3, 3)
+        else sat.wire.color.copy(PALETTE[node.status]).multiplyScalar(glow)
+      }
+      if (sat.heart) {
+        const flicker = failing ? 0.6 + 0.4 * Math.abs(Math.sin(t * 9 + i)) : 1
+        sat.heart.color.copy(PALETTE[node.status]).multiplyScalar(glow * flicker)
+      }
+
+      // ---- link: intact, or snapped with recoil + droop ----
+      v.dir.copy(v.pos).normalize()
+      v.s.copy(v.dir).multiplyScalar(CORE_R)
+      v.e.copy(v.pos).addScaledVector(v.dir, -(NODE_R + 0.08))
+      if (broken < 0.001) {
+        v.a.lerpVectors(v.s, v.e, 0.5)
+        v.b.copy(v.a)
+      } else {
+        const tau = t - anim.changedAt
+        v.a.lerpVectors(v.s, v.e, 0.5 - 0.22 * broken)
+        v.b.lerpVectors(v.s, v.e, 0.5 + 0.22 * broken)
+        v.perp.crossVectors(v.dir, UP)
+        if (v.perp.lengthSq() < 1e-4) v.perp.set(1, 0, 0)
+        v.perp.normalize()
+        // A whip when it snaps, then a slow dangle.
+        const whip = anim.target === 1 && tau > 0 ? 0.4 * Math.exp(-3 * tau) * Math.sin(22 * tau) : 0
+        const sway = 0.05 * Math.sin(t * 2.3 + i)
+        const lateral = motion * (whip + sway)
+        v.a.y -= 0.45 * broken
+        v.b.y -= 0.45 * broken
+        v.a.addScaledVector(v.perp, lateral)
+        v.b.addScaledVector(v.perp, -lateral)
+      }
+      const base = i * 4
+      writeVec(lp, base, v.s)
+      writeVec(lp, base + 1, v.a)
+      writeVec(lp, base + 2, v.b)
+      writeVec(lp, base + 3, v.e)
+
+      v.c.copy(PALETTE[node.status])
+      const linkGlow = GLOW[node.status] * (isHovered ? 1.4 : 1)
+      const endGlow = failing ? linkGlow * (0.9 + 0.5 * Math.random()) : linkGlow // broken ends crackle
+      writeCol(lc, base, v.c, linkGlow * 0.45)
+      writeCol(lc, base + 1, v.c, endGlow)
+      writeCol(lc, base + 2, v.c, endGlow)
+      writeCol(lc, base + 3, v.c, linkGlow)
+
+      // ---- packets: data flowing on live links, sparks on broken ones ----
+      for (let k = 0; k < PACKETS_PER_LINK; k++) {
+        const idx = i * PACKETS_PER_LINK + k
+        if (node.status === 'pass' || node.status === 'warn') {
+          const u = (t * 0.45 * motion + k / PACKETS_PER_LINK + i * 0.137) % 1
+          v.p.lerpVectors(v.s, v.e, u)
+          writeVec(pp, idx, v.p)
+          writeCol(pc, idx, v.c, 4 * Math.sin(Math.PI * u) * (node.status === 'warn' ? 0.7 : 1))
+        } else if (failing && broken > 0.3) {
+          v.p.copy(k === 0 ? v.a : v.b)
+          v.p.x += rand(-0.06, 0.06) * motion
+          v.p.y += rand(-0.06, 0.06) * motion
+          writeVec(pp, idx, v.p)
+          writeCol(pc, idx, v.c, Math.random() > 0.45 ? 4 : 0.3)
+        } else {
+          writeCol(pc, idx, v.c, 0) // additive blending: black = invisible
+        }
+      }
+    })
+
+    links.attributes.position.needsUpdate = true
+    links.attributes.color.needsUpdate = true
+    packets.attributes.position.needsUpdate = true
+    packets.attributes.color.needsUpdate = true
+
+    // ---- core: the target domain, tinted by overall score ----
+    const tone = score >= 80 ? PALETTE.pass : score >= 50 ? PALETTE.warn : PALETTE.fail
+    if (core.current) {
+      core.current.rotation.set(t * 0.12 * motion, t * 0.18 * motion, 0)
+      core.current.scale.setScalar(1 + 0.025 * Math.sin(t * 2) * motion)
+    }
+    const unstable = score < 50 && motion > 0 && Math.random() > 0.93
+    coreWire.current?.color.copy(tone).multiplyScalar(unstable ? 0.4 : 1.5)
+    coreHeart.current?.color.copy(tone).multiplyScalar(0.35 + 0.1 * Math.sin(t * 2))
+  })
+
+  return (
+    <>
+      {rings.map((ring, i) => (
+        <primitive key={i} object={ring} />
+      ))}
+
+      <group ref={core}>
+        <mesh>
+          <icosahedronGeometry args={[CORE_R, 1]} />
+          <meshBasicMaterial ref={coreWire} wireframe toneMapped={false} />
+        </mesh>
+        <mesh rotation={[0.4, 0.6, 0]}>
+          <icosahedronGeometry args={[CORE_R * 0.5, 0]} />
+          <meshBasicMaterial ref={coreHeart} toneMapped={false} />
+        </mesh>
+      </group>
+
+      <lineSegments geometry={links} frustumCulled={false}>
+        <lineBasicMaterial vertexColors toneMapped={false} />
+      </lineSegments>
+
+      <points geometry={packets} frustumCulled={false}>
+        <pointsMaterial
+          map={dot}
+          size={0.16}
+          sizeAttenuation
+          vertexColors
+          transparent
+          depthWrite={false}
+          blending={THREE.AdditiveBlending}
+          toneMapped={false}
+        />
+      </points>
+
+      {nodes.map((node, i) => (
+        <Satellite key={node.id} node={node} refs={sats[i]} onHover={onHover} onSelect={onSelect} />
+      ))}
+    </>
+  )
+}

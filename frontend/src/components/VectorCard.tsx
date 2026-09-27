@@ -38,7 +38,7 @@ export function VectorCard({
   const details = detailRows(check.details)
 
   return (
-    <article className={cn('panel', check.status === 'fail' && 'border-crit/30')}>
+    <article id={`vector-${check.id}`} className={cn('panel scroll-mt-32', check.status === 'fail' && 'border-crit/30')}>
       <button
         type="button"
         onClick={onToggle}
