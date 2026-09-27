@@ -1,6 +1,10 @@
 # SecureMailScope frontend
 
-React 19 + Vite + Tailwind CSS v4. Tailwind v4 is configured in CSS, not `tailwind.config.js`: theme tokens (obsidian surfaces, `ok` #10B981, `crit` #EF4444, JetBrains Mono) live in the `@theme` block of `src/index.css`.
+React 19 + Vite + Tailwind CSS v4. Tailwind v4 is configured in CSS, not `tailwind.config.js`: all theme tokens live in the `@theme` block of `src/index.css`.
+
+- **Surfaces:** `obsidian` #0B0F19 page, stepping up through `panel`, `raised`, `line`, `line-strong`. A faint 24px/120px grid overlay is drawn by `body::before`, fixed to the viewport.
+- **Status:** `ok` #10B981 (Phosphor Green, secure), `warn` #F59E0B (Warning Amber), `crit` #EF4444 (Cadmium Red, vulnerable), `na` for unmeasured.
+- **Type:** strictly monospaced. JetBrains Mono (Fira Code fallback) for all text; `font-sans` is aliased to the mono stack. Ligatures are off so DNS strings read literally, with slashed zeros and tabular digits.
 
 ```bash
 npm install

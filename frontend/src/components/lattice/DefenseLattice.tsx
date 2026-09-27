@@ -102,7 +102,7 @@ export default function DefenseLattice({
             onPointerMissed={() => setHovered(null)}
             aria-hidden
           >
-            <color attach="background" args={['#0b0f14']} />
+            <color attach="background" args={['#0e1320']} />
             <Lattice
               nodes={nodes}
               score={report.score}

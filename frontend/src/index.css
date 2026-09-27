@@ -1,6 +1,3 @@
-@import '@fontsource/instrument-sans/400.css';
-@import '@fontsource/instrument-sans/500.css';
-@import '@fontsource/instrument-sans/600.css';
 @import '@fontsource/jetbrains-mono/400.css';
 @import '@fontsource/jetbrains-mono/500.css';
 @import '@fontsource/jetbrains-mono/700.css';
@@ -9,21 +6,27 @@
 /* Tailwind v4: the theme lives here (no tailwind.config.js). Every token below
    becomes a utility, e.g. --color-ok -> text-ok / bg-ok / border-ok/40. */
 @theme {
-  /* Obsidian / slate surfaces */
-  --color-obsidian: #06080b;
-  --color-panel: #0b0f14;
-  --color-raised: #10151c;
-  --color-line: #1a212b;
-  --color-line-strong: #283241;
+  /* Deep slate / obsidian surfaces, stepped up in lightness per layer */
+  --color-obsidian: #0b0f19; /* page */
+  --color-panel: #0e1320;
+  --color-raised: #141a29;
+  --color-line: #1b2233;
+  --color-line-strong: #293247;
 
-  /* Tactical accents */
+  /* Status accents */
   --color-ok: #10b981; /* Phosphor Green: secure */
+  --color-warn: #f59e0b; /* Warning Amber */
   --color-crit: #ef4444; /* Cadmium Red: vulnerable */
-  --color-warn: #f59e0b;
   --color-na: #475569;
 
-  --font-sans: 'Instrument Sans', ui-sans-serif, system-ui, sans-serif;
-  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  /* Terminal grid overlay (see body::before) */
+  --color-grid: rgb(148 163 184 / 0.035);
+  --color-grid-major: rgb(148 163 184 / 0.06);
+
+  /* Strictly monospaced: font-sans is aliased to the mono stack so no utility
+     can fall back to a proportional face. */
+  --font-mono: 'JetBrains Mono', 'Fira Code', ui-monospace, SFMono-Regular, Menlo, monospace;
+  --font-sans: var(--font-mono);
 }
 
 @layer base {
@@ -33,9 +36,34 @@
   body {
     background: var(--color-obsidian);
     color: var(--color-slate-400);
-    font-family: var(--font-sans);
-    font-size: 13px;
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+    /* No ligatures (DNS strings must read literally: "->", "!=", "=="), a
+       slashed zero to separate 0 from O, and fixed-width digits everywhere. */
+    font-variant-ligatures: none;
+    font-feature-settings: 'zero' 1;
+    font-variant-numeric: tabular-nums slashed-zero;
     -webkit-font-smoothing: antialiased;
+  }
+  /* Faint 24px grid with a 120px major grid, fixed to the viewport and fading
+     out toward the bottom so it frames the data rather than competing with it. */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
+    background-image:
+      linear-gradient(to right, var(--color-grid-major) 1px, transparent 1px),
+      linear-gradient(to bottom, var(--color-grid-major) 1px, transparent 1px),
+      linear-gradient(to right, var(--color-grid) 1px, transparent 1px),
+      linear-gradient(to bottom, var(--color-grid) 1px, transparent 1px);
+    background-size:
+      120px 120px,
+      120px 120px,
+      24px 24px,
+      24px 24px;
+    mask-image: radial-gradient(ellipse 120% 90% at 50% 0%, #000 45%, transparent 100%);
   }
   ::selection {
     background: color-mix(in srgb, var(--color-ok) 35%, transparent);

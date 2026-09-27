@@ -26,7 +26,7 @@ _REVALIDATE = {"Cache-Control": "no-cache"}
 
 _NOT_BUILT = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>SecureMailScope</title>
-<style>body{background:#06080b;color:#94a3b8;font:14px ui-monospace,monospace;padding:3rem}
+<style>body{background:#0b0f19;color:#94a3b8;font:14px ui-monospace,monospace;padding:3rem}
 code{color:#10b981}a{color:#e2e8f0}</style></head>
 <body><h1 style="color:#e2e8f0;font-size:16px">SecureMailScope API is running</h1>
 <p>The frontend has not been built yet. Run <code>python -m app.frontend build</code>

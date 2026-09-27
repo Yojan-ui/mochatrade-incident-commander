@@ -113,21 +113,21 @@ export default function App() {
                 xl : One Fix + Matrix on the left, Score + a sticky Lattice on the
                      right, so the camera fly-to stays in view while hovering rows.
             */}
-            <div className="grid gap-3 lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)] xl:grid-cols-[minmax(0,7fr)_minmax(0,5fr)]">
-              <div className={cn('xl:col-start-2 xl:row-start-1', loading && 'opacity-40')}>
+            <div className="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)] xl:grid-cols-[minmax(0,7fr)_minmax(0,5fr)]">
+              <div className={cn('min-w-0 xl:col-start-2 xl:row-start-1', loading && 'opacity-40')}>
                 <ScorePanel report={report} />
               </div>
               {/* Keyed so per-report UI state (expanded lists) resets on a new scan */}
-              <div className={cn('xl:col-start-1 xl:row-start-1', loading && 'opacity-40')}>
+              <div className={cn('min-w-0 xl:col-start-1 xl:row-start-1', loading && 'opacity-40')}>
                 <OneFixCard key={reportKey} report={report} onAim={aim} />
               </div>
               {/* Not keyed: the lattice stays mounted so links animate between reports */}
-              <div className="lg:col-span-2 xl:sticky xl:top-28 xl:col-span-1 xl:col-start-2 xl:row-start-2 xl:self-start">
+              <div className="min-w-0 lg:col-span-2 xl:sticky xl:top-28 xl:col-span-1 xl:col-start-2 xl:row-start-2 xl:self-start">
                 <Suspense fallback={<LatticePlaceholder />}>
                   <DefenseLattice report={report} dimmed={loading} flyTo={flyTo} onSelectVector={focusVector} />
                 </Suspense>
               </div>
-              <div className={cn('lg:col-span-2 xl:col-span-1 xl:col-start-1 xl:row-start-2', loading && 'opacity-40')}>
+              <div className={cn('min-w-0 lg:col-span-2 xl:col-span-1 xl:col-start-1 xl:row-start-2', loading && 'opacity-40')}>
                 <AttackMatrix report={report} onAim={aim} />
               </div>
             </div>
