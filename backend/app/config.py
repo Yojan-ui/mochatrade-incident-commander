@@ -24,6 +24,10 @@ class Settings:
     dns_timeout: float = float(os.getenv("DNS_TIMEOUT", "4"))
     smtp_timeout: float = float(os.getenv("SMTP_TIMEOUT", "8"))
     http_timeout: float = float(os.getenv("HTTP_TIMEOUT", "5"))
+    # Budgets for the slow, sequential parts, and a hard ceiling on a whole scan.
+    spf_walk_budget: float = float(os.getenv("SPF_WALK_BUDGET", "10"))
+    probe_budget: float = float(os.getenv("PROBE_BUDGET", "20"))
+    scan_timeout: float = float(os.getenv("SCAN_TIMEOUT", "30"))
     ehlo_hostname: str = os.getenv("EHLO_HOSTNAME", "scanner.securemailscope.local")
     # Refuse to open sockets to private/loopback/link-local targets unless set.
     # A public scanner that follows attacker-controlled MX records is an SSRF

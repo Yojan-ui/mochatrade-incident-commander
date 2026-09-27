@@ -34,6 +34,10 @@ class DnsError(Exception):
     pass
 
 
+class DnsTransientError(DnsError):
+    """Timeout or SERVFAIL: the answer is unknown, not wrong (SPF 'temperror')."""
+
+
 class DnsClient:
     def __init__(self, timeout: float) -> None:
         self._resolver = dns.asyncresolver.Resolver()
@@ -46,11 +50,11 @@ class DnsClient:
         except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer):
             return None
         except dns.exception.Timeout:
-            raise DnsError(f"{rdtype} lookup for {name} timed out") from None
+            raise DnsTransientError(f"{rdtype} lookup for {name} timed out") from None
         except dns.resolver.NoNameservers:
-            raise DnsError(f"No nameserver answered the {rdtype} query for {name} (SERVFAIL)") from None
+            raise DnsTransientError(f"No nameserver answered the {rdtype} query for {name} (SERVFAIL)") from None
         except dns.exception.DNSException as exc:
-            raise DnsError(f"{rdtype} lookup for {name} failed: {exc}") from None
+            raise DnsTransientError(f"{rdtype} lookup for {name} failed: {exc}") from None
 
     async def txt(self, name: str) -> list[str]:
         answer = await self.resolve(name, "TXT")
@@ -130,7 +134,7 @@ async def _count_spf_lookups(client: DnsClient, domain: str, budget: list[int], 
                     await _count_spf_lookups(client, target, budget, depth + 1)
 
 
-async def collect_spf(client: DnsClient, domain: str) -> SpfLookup:
+async def collect_spf(client: DnsClient, domain: str, *, walk_budget: float = 10.0) -> SpfLookup:
     try:
         records = _spf_records(await client.txt(domain))
     except DnsError as exc:
@@ -139,10 +143,16 @@ async def collect_spf(client: DnsClient, domain: str) -> SpfLookup:
     if len(records) == 1:
         budget = [0]
         try:
-            await _count_spf_lookups(client, domain, budget, depth=0)
+            # include: chains resolve sequentially; cap the whole walk.
+            await asyncio.wait_for(_count_spf_lookups(client, domain, budget, depth=0), timeout=walk_budget)
+            result.lookup_count = budget[0]
+        except (DnsTransientError, TimeoutError) as exc:
+            # Unknown, not broken: don't let a slow nameserver turn SPF into a permerror.
+            result.lookup_incomplete = True
+            result.lookup_error = str(exc) or f"SPF include walk exceeded {walk_budget:.0f}s"
         except DnsError as exc:
             result.lookup_error = str(exc)
-        result.lookup_count = budget[0]
+            result.lookup_count = budget[0]
     return result
 
 
@@ -152,14 +162,14 @@ async def collect_dkim(client: DnsClient, domain: str, extra_selectors: list[str
         *(client.txt(f"{selector}._domainkey.{domain}") for selector in selectors), return_exceptions=True
     )
     keys: list[DkimKey] = []
-    failures = 0
+    failed: list[str] = []
     for selector, records in zip(selectors, results):
         if isinstance(records, Exception):
-            failures += 1
+            failed.append(selector)
             continue
         for record in records:
             # Some providers omit v=DKIM1; a p= tag is the defining feature.
             if has_version(record, "DKIM1") or re.search(r"(^|;)\s*p\s*=", record):
                 keys.append(DkimKey(selector=selector, record=record))
-    error = "Every DKIM selector lookup failed" if failures == len(selectors) else None
-    return DkimLookup(selectors_tried=selectors, keys=keys, error=error)
+    error = "Every DKIM selector lookup failed or timed out" if len(failed) == len(selectors) else None
+    return DkimLookup(selectors_tried=selectors, keys=keys, failed_selectors=failed, error=error)

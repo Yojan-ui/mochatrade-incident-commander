@@ -128,7 +128,11 @@ def evaluate_spf(spf: SpfLookup) -> CheckResult:
     common = dict(records=[record.raw], lookup_count=lookups, all_qualifier=record.all_qualifier,
                   mechanisms=record.mechanisms)
 
-    if (lookups is not None and lookups > 10) or spf.lookup_error:
+    if spf.lookup_incomplete:
+        findings = [f for f in findings if f != spf.lookup_error]
+        findings.append(f"Could not finish counting DNS lookups ({spf.lookup_error}); the 10-lookup limit "
+                        "was not checked.")
+    elif (lookups is not None and lookups > 10) or spf.lookup_error:
         if lookups is not None and lookups > 10:
             findings.insert(0, f"Needs {lookups} DNS lookups; the limit is 10, so SPF evaluates to permerror.")
         return _result("spf", Status.FAIL, 0.2, "SPF record is broken (permerror); receivers ignore it.",
@@ -189,6 +193,10 @@ def evaluate_dkim(dkim: DkimLookup, spf_state: str) -> CheckResult:
     if not valid:
         hint = "Selectors cannot be listed via DNS; if you sign with one we did not try, rescan with " \
                "?dkim_selectors=name."
+        if dkim.failed_selectors:
+            findings.append(f"{len(dkim.failed_selectors)} selector lookup(s) timed out or failed "
+                            f"({', '.join(dkim.failed_selectors[:5])}{'…' if len(dkim.failed_selectors) > 5 else ''}); "
+                            "a key there would have been missed.")
         summary = "Only revoked DKIM keys were found." if revoked else \
             f"No DKIM key found at {len(dkim.selectors_tried)} common selectors."
         return _result("dkim", Status.FAIL, 0, summary, state="missing", findings=findings + [hint],

@@ -30,9 +30,22 @@ async def _collect_mta_sts(client: DnsClient, domain: str, settings: Settings) -
     return result
 
 
+class ScanTimeout(Exception):
+    pass
+
+
 async def _collect_starttls(mx: MxLookup, settings: Settings) -> StartTlsProbe | None:
+    """Probe within `probe_budget`; on overrun, report the vector as unmeasured."""
     if mx.null_mx or not mx.hosts:
         return None
+    try:
+        return await asyncio.wait_for(_probe_mx_hosts(mx, settings), timeout=settings.probe_budget)
+    except TimeoutError:
+        return StartTlsProbe(host=mx.hosts[0].host,
+                             error=f"STARTTLS probe exceeded its {settings.probe_budget:.0f}s budget")
+
+
+async def _probe_mx_hosts(mx: MxLookup, settings: Settings) -> StartTlsProbe | None:
     last: StartTlsProbe | None = None
     for host in mx.hosts[:_MAX_PROBE_HOSTS]:
         candidates = [a for a in host.addresses if settings.allow_private_targets or is_public_ip(a)]
@@ -53,7 +66,7 @@ async def collect(domain: str, dkim_selectors: list[str], settings: Settings) ->
     client = DnsClient(timeout=settings.dns_timeout)
     mx = await collect_mx(client, domain)  # raises DomainNotFound
     spf, dkim, dmarc, mta_sts, tls_rpt, starttls = await asyncio.gather(
-        collect_spf(client, domain),
+        collect_spf(client, domain, walk_budget=settings.spf_walk_budget),
         collect_dkim(client, domain, dkim_selectors),
         collect_txt(client, f"_dmarc.{domain}"),
         _collect_mta_sts(client, domain, settings),
@@ -90,5 +103,8 @@ def build_report(obs: Observations, *, mode: str, duration_ms: int) -> ScanRepor
 
 async def run_scan(domain: str, dkim_selectors: list[str], settings: Settings) -> ScanReport:
     started = time.monotonic()
-    obs = await collect(domain, dkim_selectors, settings)
+    try:
+        obs = await asyncio.wait_for(collect(domain, dkim_selectors, settings), timeout=settings.scan_timeout)
+    except TimeoutError:
+        raise ScanTimeout(f"Scan of {domain} exceeded {settings.scan_timeout:.0f}s") from None
     return build_report(obs, mode="live", duration_ms=int((time.monotonic() - started) * 1000))

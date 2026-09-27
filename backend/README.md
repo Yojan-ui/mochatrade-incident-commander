@@ -40,4 +40,12 @@ It never recommends a fix that would break mail: no DMARC enforcement without pa
 
 ## Configuration (env vars)
 
-`DNS_TIMEOUT` (4), `SMTP_TIMEOUT` (8), `HTTP_TIMEOUT` (5), `EHLO_HOSTNAME`, `CORS_ORIGINS`, `STATIC_DIR`, `ALLOW_PRIVATE_TARGETS` (false: refuses to probe private/loopback IPs, to prevent SSRF).
+`DNS_TIMEOUT` (4), `SMTP_TIMEOUT` (8), `HTTP_TIMEOUT` (5), `SPF_WALK_BUDGET` (10), `PROBE_BUDGET` (20), `SCAN_TIMEOUT` (30), `EHLO_HOSTNAME`, `CORS_ORIGINS`, `STATIC_DIR`, `ALLOW_PRIVATE_TARGETS` (false: refuses to probe private/loopback IPs, to prevent SSRF).
+
+## Timeouts
+
+A timeout never becomes a wrong verdict:
+
+- **DNS timeout / SERVFAIL** is a transient error. A timed-out SPF `include:` walk leaves the policy judged on its own terms and notes that the 10-lookup check was skipped. It is not reported as a permerror. DKIM lists any selectors it could not check.
+- **STARTTLS probe** has a total budget (`PROBE_BUDGET`); on overrun the vector is reported as unmeasured and excluded from the score.
+- **Whole scan** is capped by `SCAN_TIMEOUT`, which returns `504 {"detail": "..."}`. Any unexpected error returns `500 {"detail": "..."}`, so every error response is JSON.

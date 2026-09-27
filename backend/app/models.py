@@ -38,6 +38,7 @@ class TxtLookup(BaseModel):
 class SpfLookup(TxtLookup):
     lookup_count: int | None = None  # RFC 7208 §4.6.4 DNS-lookup budget used
     lookup_error: str | None = None
+    lookup_incomplete: bool = False  # walk hit a timeout/SERVFAIL; count unknown
 
 
 class MxHost(BaseModel):
@@ -60,6 +61,7 @@ class DkimKey(BaseModel):
 class DkimLookup(BaseModel):
     selectors_tried: list[str] = Field(default_factory=list)
     keys: list[DkimKey] = Field(default_factory=list)
+    failed_selectors: list[str] = Field(default_factory=list)  # timed out / SERVFAIL
     error: str | None = None
 
 

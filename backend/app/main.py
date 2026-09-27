@@ -5,8 +5,11 @@ from __future__ import annotations
 import asyncio
 import time
 
-from fastapi import FastAPI, HTTPException, Query
+import logging
+
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app import demo
 from app.collectors.dns_collect import DomainNotFound
@@ -14,7 +17,9 @@ from app.config import get_settings
 from app.domain import InvalidDomain, normalize_domain, parse_selectors
 from app.frontend import FrontendFiles
 from app.models import DemoScenario, ScanReport
-from app.scanner import build_report, run_scan
+from app.scanner import ScanTimeout, build_report, run_scan
+
+log = logging.getLogger("securemailscope")
 
 settings = get_settings()
 
@@ -24,6 +29,13 @@ app = FastAPI(
     description="Email-security posture scanner: SPF, DKIM, DMARC, MTA-STS, TLS-RPT, MX and a live STARTTLS probe.",
 )
 app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins, allow_methods=["GET"], allow_headers=["*"])
+
+
+@app.exception_handler(Exception)
+async def unhandled_error(request: Request, exc: Exception) -> JSONResponse:
+    # Keep every error JSON-shaped ({"detail": ...}) so the UI can always render it.
+    log.exception("Unhandled error on %s", request.url.path)
+    return JSONResponse(status_code=500, content={"detail": "Internal error while processing the request"})
 
 
 @app.get("/api/health")
@@ -45,6 +57,8 @@ async def scan(
         return await run_scan(normalized, selectors, settings)
     except DomainNotFound:
         raise HTTPException(status_code=404, detail=f"{normalized} does not exist (NXDOMAIN)") from None
+    except ScanTimeout as exc:
+        raise HTTPException(status_code=504, detail=str(exc)) from None
 
 
 # ---- Dummy endpoints for UI development (no network access) ---------------- #
