@@ -22,12 +22,3 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
-
-# Python
-__pycache__/
-*.py[cod]
-.venv/
-.pytest_cache/
-
-# Vite build output (served by FastAPI)
-backend/static/
