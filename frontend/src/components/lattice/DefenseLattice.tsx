@@ -1,6 +1,7 @@
 import { Bloom, EffectComposer } from '@react-three/postprocessing'
 import { Canvas } from '@react-three/fiber'
 import { Component, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import * as THREE from 'three'
 import { cn } from '@/lib/cn'
 import { STATUS_TONE, VECTOR_ABBR, VECTOR_ORDER } from '@/lib/meta'
 import type { ScanReport, VectorId } from '@/lib/types'
@@ -52,10 +53,13 @@ class WebGLBoundary extends Component<{ children: ReactNode }, { failed: boolean
 export default function DefenseLattice({
   report,
   dimmed = false,
+  flyTo = null,
   onSelectVector,
 }: {
   report: ScanReport
   dimmed?: boolean
+  /** Vector the camera should fly to, driven by hovering DOM elements. */
+  flyTo?: VectorId | null
   onSelectVector: (id: VectorId) => void
 }) {
   const nodes = useMemo<LatticeNode[]>(
@@ -69,8 +73,11 @@ export default function DefenseLattice({
   const [hovered, setHovered] = useState<VectorId | null>(null)
   const reducedMotion = useReducedMotion()
   const [frameRef, inView] = useInView<HTMLDivElement>()
+  // Shared between the scene (writes each frame) and the camera rig (reads).
+  const positions = useMemo(() => VECTOR_ORDER.map(() => new THREE.Vector3()), [])
+  const flyIndex = flyTo ? nodes.findIndex((n) => n.id === flyTo) : -1
   const intact = nodes.filter((n) => n.status !== 'fail').length
-  const focus = nodes.find((n) => n.id === hovered)
+  const focus = nodes.find((n) => n.id === (flyTo ?? hovered))
 
   return (
     <section className="panel overflow-hidden" aria-labelledby="lattice-heading">
@@ -100,11 +107,18 @@ export default function DefenseLattice({
               nodes={nodes}
               score={report.score}
               hovered={hovered}
+              focus={flyIndex >= 0 ? flyTo : null}
+              positions={positions}
               reducedMotion={reducedMotion}
               onHover={setHovered}
               onSelect={onSelectVector}
             />
-            <Controls autoRotate={!reducedMotion} />
+            <Controls
+              autoRotate={!reducedMotion}
+              focus={flyIndex >= 0 ? flyIndex : null}
+              positions={positions}
+              reducedMotion={reducedMotion}
+            />
             <EffectComposer multisampling={4}>
               <Bloom mipmapBlur luminanceThreshold={1} luminanceSmoothing={0.2} intensity={1.6} radius={0.75} />
             </EffectComposer>
@@ -114,7 +128,13 @@ export default function DefenseLattice({
         {/* Readout for the hovered/focused node */}
         <div className="pointer-events-none absolute top-3 left-4 max-w-[min(22rem,calc(100%-2rem))]" aria-live="polite">
           {focus ? (
-            <div className="rounded-sm border border-line-strong bg-obsidian/85 px-3 py-2 backdrop-blur-sm">
+            <div
+              className={cn(
+                'rounded-sm border bg-obsidian/85 px-3 py-2 backdrop-blur-sm',
+                flyTo ? STATUS_TONE[focus.status].border : 'border-line-strong',
+              )}
+            >
+              {flyTo && <p className="eyebrow mb-1 text-slate-400">▸ Target lock</p>}
               <p className="flex items-center gap-2 font-mono text-[11px] tracking-wider">
                 <span className="text-slate-100">{focus.name}</span>
                 <span className={STATUS_TONE[focus.status].text}>{STATUS_TONE[focus.status].label}</span>

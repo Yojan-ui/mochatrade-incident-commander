@@ -1,8 +1,9 @@
 # SecureMailScope: FastAPI backend + static frontend, served by Uvicorn on :80
 
-# ---- Stage 1: build the React frontend -------------------------------------
+# ---- Stage 1: compile the React app -----------------------------------------
+# Vite's outDir is ../backend/static, so the build lands in /build/backend/static
 FROM node:22-slim AS frontend
-WORKDIR /build
+WORKDIR /build/frontend
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
 COPY frontend/ ./
@@ -23,7 +24,8 @@ COPY backend/requirements.txt ./requirements.txt
 RUN pip install -r requirements.txt
 
 COPY backend/app ./app
-COPY --from=frontend /build/dist ./static
+# Compiled frontend into the backend's static folder; FastAPI serves it at "/"
+COPY --from=frontend /build/backend/static ./static
 
 EXPOSE 80
 

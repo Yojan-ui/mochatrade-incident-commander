@@ -7,12 +7,12 @@ import time
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 
 from app import demo
 from app.collectors.dns_collect import DomainNotFound
 from app.config import get_settings
 from app.domain import InvalidDomain, normalize_domain, parse_selectors
+from app.frontend import FrontendFiles
 from app.models import DemoScenario, ScanReport
 from app.scanner import build_report, run_scan
 
@@ -80,7 +80,17 @@ async def demo_error(status_code: int) -> None:
     raise HTTPException(status_code=status_code, detail=messages[status_code])
 
 
-# ---- Static frontend (mounted last so /api/* wins) ------------------------- #
+# ---- Compiled frontend at "/" (registered last so /api/* and /docs win) ---- #
 
-if settings.static_dir.is_dir():
-    app.mount("/", StaticFiles(directory=settings.static_dir, html=True), name="frontend")
+frontend = FrontendFiles(settings.static_dir)
+
+
+@app.get("/api/{path:path}", include_in_schema=False)
+async def unknown_api_route(path: str) -> None:
+    # Without this, a typo'd API path would fall through to the SPA shell.
+    raise HTTPException(status_code=404, detail=f"Unknown API route: /api/{path}")
+
+
+@app.get("/{path:path}", include_in_schema=False)
+async def serve_frontend(path: str):
+    return frontend.response(path)

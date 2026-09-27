@@ -1,8 +1,8 @@
 import { ChevronDown, Crosshair, ShieldCheck } from 'lucide-react'
 import { useState } from 'react'
 import { cn } from '@/lib/cn'
-import { EFFORT_LABEL } from '@/lib/meta'
-import type { AttackPath, Fix, ScanReport } from '@/lib/types'
+import { EFFORT_LABEL, VECTOR_ORDER } from '@/lib/meta'
+import type { AttackPath, Fix, ScanReport, VectorId } from '@/lib/types'
 import { CopyButton, PanelHeader } from './primitives'
 
 function RecordField({ label, value, copy }: { label: string; value: string; copy?: boolean }) {
@@ -34,13 +34,20 @@ function Caveat({ text }: { text: string }) {
   )
 }
 
-export function OneFixCard({ report }: { report: ScanReport }) {
+export function OneFixCard({
+  report,
+  onAim,
+}: {
+  report: ScanReport
+  /** Point the 3D camera at the vector this fix changes (null to release). */
+  onAim?: (id: VectorId | null) => void
+}) {
   const fix = report.one_fix
   const paths = new Map(report.attack_paths.map((p) => [p.id, p]))
 
   if (!fix) {
     return (
-      <section className="panel flex flex-col" aria-labelledby="one-fix-heading">
+      <section className="panel flex h-full flex-col" aria-labelledby="one-fix-heading">
         <PanelHeader label="The one fix" />
         <div className="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-center">
           <ShieldCheck className="size-8 text-ok" aria-hidden />
@@ -56,8 +63,21 @@ export function OneFixCard({ report }: { report: ScanReport }) {
   }
 
   const gain = fix.score_after - fix.score_before
+  const target = VECTOR_ORDER.find((v) => v === fix.id)
+  const aimHandlers = target && onAim
+    ? {
+        onMouseEnter: () => onAim(target),
+        onMouseLeave: () => onAim(null),
+        onFocus: () => onAim(target),
+        onBlur: () => onAim(null),
+      }
+    : {}
   return (
-    <section className="panel flex flex-col border-ok/30" aria-labelledby="one-fix-heading">
+    <section
+      className="panel flex h-full flex-col border-ok/30 transition-colors hover:border-ok/60"
+      aria-labelledby="one-fix-heading"
+      {...aimHandlers}
+    >
       <PanelHeader label="The one fix">
         <span className="font-mono text-[10px] tracking-wider text-slate-500">{EFFORT_LABEL[fix.effort].toUpperCase()}</span>
       </PanelHeader>

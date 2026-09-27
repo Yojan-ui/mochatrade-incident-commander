@@ -13,7 +13,7 @@ export function ScorePanel({ report }: { report: ScanReport }) {
   for (const path of report.attack_paths) counts[path.state] += 1
 
   return (
-    <section className="panel flex flex-col" aria-labelledby="score-heading">
+    <section className="panel flex h-full flex-col" aria-labelledby="score-heading">
       <PanelHeader label="Posture score">
         <span
           className={cn(

@@ -1,9 +1,17 @@
 import { cn } from '@/lib/cn'
 import { PATH_TONE, PATH_VECTORS, STATUS_TONE, VECTOR_ABBR, VECTOR_ORDER } from '@/lib/meta'
-import type { AttackPath, CheckResult, PathState, ScanReport } from '@/lib/types'
+import type { AttackPath, CheckResult, PathState, ScanReport, Status, VectorId } from '@/lib/types'
 import { Lamp, PanelHeader, SeverityPips } from './primitives'
 
 const STATE_RANK: Record<PathState, number> = { open: 0, closed: 1, not_applicable: 2 }
+const BROKEN_RANK: Record<Status, number> = { fail: 0, warn: 1, error: 2, info: 3, pass: 4 }
+
+/** The node to fly to for a path: its most broken vector, primary vector on ties. */
+function aimFor(path: AttackPath, checks: Map<string, CheckResult>): VectorId | null {
+  const candidates = (PATH_VECTORS[path.id] ?? []).filter((v) => checks.has(v))
+  candidates.sort((a, b) => BROKEN_RANK[checks.get(a)!.status] - BROKEN_RANK[checks.get(b)!.status])
+  return candidates[0] ?? null
+}
 
 function FixCell({ path, fixedByOneFix }: { path: AttackPath; fixedByOneFix: boolean }) {
   if (path.state !== 'open') return <span className="text-slate-700">—</span>
@@ -14,7 +22,14 @@ function FixCell({ path, fixedByOneFix }: { path: AttackPath; fixedByOneFix: boo
   return <span className="text-[10px] text-slate-500">DNS</span>
 }
 
-export function AttackMatrix({ report }: { report: ScanReport }) {
+export function AttackMatrix({
+  report,
+  onAim,
+}: {
+  report: ScanReport
+  /** Point the 3D camera at the node behind a row (null to release). */
+  onAim?: (id: VectorId | null) => void
+}) {
   const checks = new Map<string, CheckResult>(report.checks.map((c) => [c.id, c]))
   const oneFix = new Set(report.one_fix?.closes ?? [])
   const rows = [...report.attack_paths].sort(
@@ -54,8 +69,13 @@ export function AttackMatrix({ report }: { report: ScanReport }) {
               return (
                 <tr
                   key={path.id}
+                  tabIndex={onAim ? 0 : undefined}
+                  onMouseEnter={() => onAim?.(aimFor(path, checks))}
+                  onMouseLeave={() => onAim?.(null)}
+                  onFocus={() => onAim?.(aimFor(path, checks))}
+                  onBlur={() => onAim?.(null)}
                   className={cn(
-                    'border-b border-line last:border-b-0 hover:bg-raised',
+                    'border-b border-line last:border-b-0 hover:bg-raised focus-visible:bg-raised',
                     path.state === 'open' && 'shadow-[inset_2px_0_0_var(--color-crit)]',
                     muted && 'opacity-50',
                   )}

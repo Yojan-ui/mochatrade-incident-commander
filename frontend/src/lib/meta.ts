@@ -13,14 +13,15 @@ export const VECTOR_ABBR: Record<VectorId, string> = {
 }
 
 // Which vectors govern each attack path (mirrors the predicates in
-// backend/app/analysis/scoring.py). Drives the matrix columns.
+// backend/app/analysis/scoring.py). Drives the matrix columns. The primary
+// vector is listed first; the 3D fly-to uses it to break ties.
 export const PATH_VECTORS: Record<string, VectorId[]> = {
-  exact_domain_spoofing: ['spf', 'dkim', 'dmarc'],
+  exact_domain_spoofing: ['dmarc', 'spf', 'dkim'],
   subdomain_spoofing: ['dmarc'],
   envelope_spoofing: ['spf', 'dmarc'],
   message_tampering: ['dkim'],
-  starttls_downgrade: ['mx', 'starttls', 'mta_sts'],
-  cleartext_delivery: ['mx', 'starttls'],
+  starttls_downgrade: ['mta_sts', 'starttls', 'mx'],
+  cleartext_delivery: ['starttls', 'mx'],
   spoofing_blind_spot: ['dmarc'],
   tls_blind_spot: ['tls_rpt'],
 }

@@ -11,7 +11,16 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
 .venv/bin/python -m pytest
 ```
 
-Docker (from the repo root): `docker build -t securemailscope . && docker run -p 8080:80 securemailscope`
+The frontend is compiled straight into `backend/static/` (Vite `outDir`) and FastAPI serves it at `/`:
+
+```bash
+.venv/bin/python -m app.frontend build   # npm ci if needed, then npm run build
+.venv/bin/uvicorn app.main:app --port 8000   # http://localhost:8000 = full app
+```
+
+Hashed files under `/assets/` are served `immutable`; `index.html` is `no-cache`; unknown extension-less paths fall back to the SPA shell; unknown `/api/*` paths return a JSON 404. Without a build, `/` returns a 503 page explaining how to build.
+
+Docker (from the repo root): `docker build -t securemailscope . && docker run -p 8080:80 securemailscope`. A Node stage compiles the React app, and its output is copied into the image's static folder before Uvicorn starts.
 
 ## Endpoints
 

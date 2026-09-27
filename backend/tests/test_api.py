@@ -1,3 +1,4 @@
+import pytest
 from fastapi.testclient import TestClient
 
 from app import demo, main
@@ -55,5 +56,55 @@ def test_scan_normalises_input(monkeypatch):
     assert seen == {"domain": "example.com", "selectors": ["s1", "s2"]}
 
 
-def test_static_index_is_served():
-    assert "SecureMailScope" in client.get("/").text
+@pytest.fixture
+def built_frontend(tmp_path, monkeypatch):
+    (tmp_path / "assets").mkdir()
+    (tmp_path / "index.html").write_text("<title>SecureMailScope</title>")
+    (tmp_path / "assets" / "app-abc123.js").write_text("console.log(1)")
+    (tmp_path / "favicon.svg").write_text("<svg/>")
+    monkeypatch.setattr(main.frontend, "root", tmp_path)
+    return tmp_path
+
+
+def test_root_serves_built_index(built_frontend):
+    response = client.get("/")
+    assert response.status_code == 200 and "SecureMailScope" in response.text
+    assert response.headers["cache-control"] == "no-cache"
+
+
+def test_hashed_assets_are_cached_immutably(built_frontend):
+    response = client.get("/assets/app-abc123.js")
+    assert response.status_code == 200
+    assert "immutable" in response.headers["cache-control"]
+    assert client.get("/favicon.svg").headers["cache-control"] == "no-cache"
+
+
+def test_client_routes_fall_back_to_index_but_missing_files_404(built_frontend):
+    assert "SecureMailScope" in client.get("/some/client/route").text
+    assert client.get("/assets/stale-999.js").status_code == 404
+
+
+def test_path_traversal_is_blocked(built_frontend):
+    (built_frontend.parent / "secret.txt").write_text("nope")
+    response = client.get("/..%2fsecret.txt")
+    assert "nope" not in response.text
+
+
+def test_unknown_api_route_is_json_404(built_frontend):
+    response = client.get("/api/nope")
+    assert response.status_code == 404 and response.json()["detail"].startswith("Unknown API route")
+
+
+def test_unbuilt_frontend_explains_how_to_build(tmp_path, monkeypatch):
+    monkeypatch.setattr(main.frontend, "root", tmp_path / "missing")
+    response = client.get("/")
+    assert response.status_code == 503 and "python -m app.frontend build" in response.text
+
+
+def test_frontend_files_rejects_dotdot_directly(built_frontend):
+    from fastapi import HTTPException
+
+    (built_frontend.parent / "secret.txt").write_text("nope")
+    with pytest.raises(HTTPException) as exc:
+        main.frontend.response("../secret.txt")
+    assert exc.value.status_code == 404

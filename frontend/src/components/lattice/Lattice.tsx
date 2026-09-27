@@ -32,10 +32,44 @@ const CORE_R = 1.15
 const NODE_R = 0.26
 const ORBIT_SPEED = 0.11
 const TILTS = [-0.4, 0, 0.4]
-const PACKETS_PER_LINK = 2
+// Data streams: each link carries STREAM packets, each drawn with a fading
+// TRAIL, plus SPARKS points reserved for the break on failing links.
+const STREAM = 10
+const TRAIL = 3
+const TRAIL_GAP = 0.022
+const TRAIL_FADE = [1, 0.45, 0.18]
+const SPARKS = 2
+const POINTS_PER_LINK = STREAM * TRAIL + SPARKS
+const WHITE = new THREE.Color(1, 1, 1)
 const UP = new THREE.Vector3(0, 1, 0)
 
 const rand = (min: number, max: number) => min + Math.random() * (max - min)
+/** Deterministic 0..1 noise, so each packet keeps its own speed and phase. */
+const hash = (n: number) => {
+  const x = Math.sin(n * 12.9898) * 43758.5453
+  return x - Math.floor(x)
+}
+
+interface Packet {
+  phase: number
+  speed: number
+  inbound: boolean // responses flow node -> core, requests core -> node
+  dropAt: number // packet loss point on degraded (warn) links; >1 = never
+}
+
+function makeStreams(count: number): Packet[][] {
+  return Array.from({ length: count }, (_, i) =>
+    Array.from({ length: STREAM }, (_, k) => {
+      const seed = i * 97.3 + k * 13.1
+      return {
+        phase: hash(seed),
+        speed: 0.55 + 0.95 * hash(seed + 1),
+        inbound: k % 4 === 3,
+        dropAt: hash(seed + 2) < 0.35 ? 0.3 + 0.5 * hash(seed + 3) : 2,
+      }
+    }),
+  )
+}
 
 function nodePosition(i: number, count: number, t: number, out: THREE.Vector3) {
   const angle = (i / count) * Math.PI * 2 + t * ORBIT_SPEED
@@ -153,6 +187,8 @@ export function Lattice({
   nodes,
   score,
   hovered,
+  focus,
+  positions,
   reducedMotion,
   onHover,
   onSelect,
@@ -160,15 +196,19 @@ export function Lattice({
   nodes: LatticeNode[]
   score: number
   hovered: VectorId | null
+  /** Node the camera is flying to; everything else dims. */
+  focus: VectorId | null
+  /** Written every frame with each node's (un-jittered) position, read by the camera rig. */
+  positions: THREE.Vector3[]
   reducedMotion: boolean
   onHover: (id: VectorId | null) => void
   onSelect: (id: VectorId) => void
 }) {
   const count = nodes.length
-  const live = useRef({ nodes, hovered, score, reducedMotion })
+  const live = useRef({ nodes, hovered, focus, score, reducedMotion })
   useEffect(() => {
-    live.current = { nodes, hovered, score, reducedMotion }
-  }, [nodes, hovered, score, reducedMotion])
+    live.current = { nodes, hovered, focus, score, reducedMotion }
+  }, [nodes, hovered, focus, score, reducedMotion])
 
   const anims = useRef<NodeAnim[]>([])
   if (anims.current.length !== count) anims.current = nodes.map(freshAnim)
@@ -176,6 +216,7 @@ export function Lattice({
     () => Array.from({ length: count }, () => ({ mount: null, rotor: null, wire: null, heart: null })),
     [count],
   )
+  const streams = useMemo(() => makeStreams(count), [count])
   const core = useRef<THREE.Group>(null)
   const coreWire = useRef<THREE.MeshBasicMaterial>(null)
   const coreHeart = useRef<THREE.MeshBasicMaterial>(null)
@@ -188,7 +229,7 @@ export function Lattice({
     return g
   }, [count])
   const packets = useMemo(() => {
-    const n = count * PACKETS_PER_LINK * 3
+    const n = count * POINTS_PER_LINK * 3
     const g = new THREE.BufferGeometry()
     g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(n), 3).setUsage(THREE.DynamicDrawUsage))
     g.setAttribute('color', new THREE.BufferAttribute(new Float32Array(n), 3).setUsage(THREE.DynamicDrawUsage))
@@ -220,13 +261,14 @@ export function Lattice({
       perp: new THREE.Vector3(),
       p: new THREE.Vector3(),
       c: new THREE.Color(),
+      inbound: new THREE.Color(),
     }),
     [],
   )
 
   useFrame(({ clock }) => {
     const t = clock.elapsedTime
-    const { nodes, hovered, score, reducedMotion } = live.current
+    const { nodes, hovered, focus, score, reducedMotion } = live.current
     const motion = reducedMotion ? 0 : 1
     const lp = links.attributes.position.array as Float32Array
     const lc = links.attributes.color.array as Float32Array
@@ -259,13 +301,18 @@ export function Lattice({
 
       // ---- satellite: orbit, spin, glitch ----
       nodePosition(i, count, t * motion, v.pos)
+      positions[i]?.copy(v.pos)
       if (snapped && t > anim.nextGlitch) {
         anim.glitchUntil = t + rand(0.05, 0.2)
         anim.nextGlitch = anim.glitchUntil + rand(0.25, 1.2)
         anim.jitter.set(rand(-1, 1), rand(-1, 1), rand(-1, 1)).multiplyScalar(0.16)
       }
       const glitching = snapped && motion > 0 && t < anim.glitchUntil
-      const isHovered = hovered === node.id
+      const isFocused = focus === node.id
+      const isHovered = hovered === node.id || isFocused
+      // While the camera is locked on one node, the rest of the lattice drops
+      // below the bloom threshold so the target is the only thing glowing.
+      const dim = focus && !isFocused ? 0.28 : 1
       const sat = sats[i]
       if (sat.mount) {
         sat.mount.position.copy(v.pos)
@@ -277,9 +324,9 @@ export function Lattice({
         else sat.rotor.scale.setScalar(base)
         sat.rotor.rotation.set(t * 0.4 * motion + i, t * 0.7 * motion + i, glitching ? rand(-0.6, 0.6) : 0)
       }
-      const glow = GLOW[node.status] * (isHovered ? 1.3 : 1)
+      const glow = GLOW[node.status] * (isHovered ? 1.3 : 1) * dim
       if (sat.wire) {
-        if (glitching && Math.random() > 0.5) sat.wire.color.setRGB(3, 3, 3)
+        if (glitching && Math.random() > 0.5) sat.wire.color.setRGB(3 * dim, 3 * dim, 3 * dim)
         else sat.wire.color.copy(PALETTE[node.status]).multiplyScalar(glow)
       }
       if (sat.heart) {
@@ -317,30 +364,58 @@ export function Lattice({
       writeVec(lp, base + 3, v.e)
 
       v.c.copy(PALETTE[node.status])
-      const linkGlow = GLOW[node.status] * (isHovered ? 1.4 : 1)
+      const linkGlow = GLOW[node.status] * (isHovered ? 1.4 : 1) * dim
       const endGlow = failing ? linkGlow * (0.9 + 0.5 * Math.random()) : linkGlow // broken ends crackle
       writeCol(lc, base, v.c, linkGlow * 0.45)
       writeCol(lc, base + 1, v.c, endGlow)
       writeCol(lc, base + 2, v.c, endGlow)
       writeCol(lc, base + 3, v.c, linkGlow)
 
-      // ---- packets: data flowing on live links, sparks on broken ones ----
-      for (let k = 0; k < PACKETS_PER_LINK; k++) {
-        const idx = i * PACKETS_PER_LINK + k
-        if (node.status === 'pass' || node.status === 'warn') {
-          const u = (t * 0.45 * motion + k / PACKETS_PER_LINK + i * 0.137) % 1
-          v.p.lerpVectors(v.s, v.e, u)
-          writeVec(pp, idx, v.p)
-          writeCol(pc, idx, v.c, 4 * Math.sin(Math.PI * u) * (node.status === 'warn' ? 0.7 : 1))
-        } else if (failing && broken > 0.3) {
+      // ---- data streams ----
+      // pass: steady bidirectional traffic. warn: slower, some packets drop
+      // mid-link. fail: outbound packets run into the break and die there.
+      let slot = i * POINTS_PER_LINK
+      const emit = (col: THREE.Color, k: number) => {
+        writeVec(pp, slot, v.p)
+        writeCol(pc, slot, col, k)
+        slot++
+      }
+      const skip = () => {
+        writeCol(pc, slot, v.c, 0) // additive blending: black = invisible
+        slot++
+      }
+      const flowing = node.status === 'pass' || node.status === 'warn' || failing
+      const pace = motion * (isFocused ? 1.7 : 1) * (node.status === 'warn' ? 0.6 : 1)
+      v.inbound.copy(v.c).lerp(WHITE, 0.55)
+      for (const pk of streams[i]) {
+        if (!flowing || (failing && pk.inbound)) {
+          for (let j = 0; j < TRAIL; j++) skip()
+          continue
+        }
+        const u = (t * pk.speed * pace + pk.phase) % 1
+        for (let j = 0; j < TRAIL; j++) {
+          const uj = u - j * TRAIL_GAP
+          if (uj < 0 || uj > pk.dropAt) {
+            skip()
+            continue
+          }
+          if (failing) {
+            v.p.lerpVectors(v.s, v.a, uj)
+            emit(v.c, 3 * (uj > 0.85 ? 1.8 : 1) * TRAIL_FADE[j] * dim)
+          } else {
+            v.p.lerpVectors(v.s, v.e, pk.inbound ? 1 - uj : uj)
+            const fade = Math.sin(Math.PI * uj) * (node.status === 'warn' ? 0.75 : 1)
+            emit(pk.inbound ? v.inbound : v.c, 3.4 * fade * TRAIL_FADE[j] * dim)
+          }
+        }
+      }
+      for (let k = 0; k < SPARKS; k++) {
+        if (failing && broken > 0.3) {
           v.p.copy(k === 0 ? v.a : v.b)
           v.p.x += rand(-0.06, 0.06) * motion
           v.p.y += rand(-0.06, 0.06) * motion
-          writeVec(pp, idx, v.p)
-          writeCol(pc, idx, v.c, Math.random() > 0.45 ? 4 : 0.3)
-        } else {
-          writeCol(pc, idx, v.c, 0) // additive blending: black = invisible
-        }
+          emit(v.c, (Math.random() > 0.45 ? 4 : 0.3) * dim)
+        } else skip()
       }
     })
 
@@ -351,13 +426,14 @@ export function Lattice({
 
     // ---- core: the target domain, tinted by overall score ----
     const tone = score >= 80 ? PALETTE.pass : score >= 50 ? PALETTE.warn : PALETTE.fail
+    const coreDim = focus ? 0.45 : 1
     if (core.current) {
       core.current.rotation.set(t * 0.12 * motion, t * 0.18 * motion, 0)
       core.current.scale.setScalar(1 + 0.025 * Math.sin(t * 2) * motion)
     }
     const unstable = score < 50 && motion > 0 && Math.random() > 0.93
-    coreWire.current?.color.copy(tone).multiplyScalar(unstable ? 0.4 : 1.5)
-    coreHeart.current?.color.copy(tone).multiplyScalar(0.35 + 0.1 * Math.sin(t * 2))
+    coreWire.current?.color.copy(tone).multiplyScalar((unstable ? 0.4 : 1.5) * coreDim)
+    coreHeart.current?.color.copy(tone).multiplyScalar((0.35 + 0.1 * Math.sin(t * 2)) * coreDim)
   })
 
   return (
@@ -384,7 +460,7 @@ export function Lattice({
       <points geometry={packets} frustumCulled={false}>
         <pointsMaterial
           map={dot}
-          size={0.16}
+          size={0.13}
           sizeAttenuation
           vertexColors
           transparent
