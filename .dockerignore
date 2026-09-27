@@ -1,0 +1,13 @@
+# Keep the build context small: only backend/ is needed
+node_modules
+dist
+.git
+src
+public
+scripts
+*.md
+**/__pycache__
+**/*.pyc
+backend/.venv
+backend/tests
+backend/.pytest_cache
