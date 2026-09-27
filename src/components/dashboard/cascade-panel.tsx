@@ -1,7 +1,7 @@
 import { Suspense, lazy } from 'react'
 import { cn } from '@/lib/utils'
 import { ControlButton, marketStatus } from './action-grid'
-import type { LaneState } from './cascade-dynamics'
+import { collapseDepth, type LaneState } from './cascade-dynamics'
 import { REPLAY_LENGTH, fmtPrice, usd, type Control, type Controls, type Market, type Metrics } from './use-incident-sim'
 
 // three.js only loads when an asset tab is opened, keeping it out of the main bundle
@@ -41,7 +41,8 @@ export function CascadePanel({
   id: string
   labelledBy: string
 }) {
-  // The same replay tick driving the surface's uSeverity
+  // Same formula the 3D mesh uses (live stress), so this readout matches the surface
+  const lost = collapseDepth(metrics.stressByMarket[assetId], state)
   const liq = metrics.liqByMarket[assetId][metrics.liqByMarket[assetId].length - 1]
   const dd = metrics.drawdownByMarket[assetId]
   const { pause, halt } = controls.markets[assetId]
@@ -53,17 +54,19 @@ export function CascadePanel({
         <span className="flex flex-wrap items-center gap-x-3 gap-y-0.5">
           <span className="font-sans font-medium text-white">{assetId} bid-side order book</span>
           <Readout
+            label="liquidity lost"
+            tone={state !== 'live' ? 'text-[#06b6d4]' : lost >= 0.5 ? 'text-[#ef4444]' : 'text-white'}
+          >
+            {state !== 'live' ? 'BREAKER' : `${Math.round(lost * 100)}%`}
+          </Readout>
+          {/* Historical replay: shown for reference; it no longer shapes the mesh */}
+          <Readout
             label="replay"
             tone={metrics.replayPhase === 'PRE-CRASH' ? 'text-[#22c55e]' : 'text-[#ef4444]'}
           >
             {`tick ${String(metrics.replayTick).padStart(3, '0')}/${REPLAY_LENGTH} ${metrics.replayPhase}`}
           </Readout>
-          <Readout
-            label="severity"
-            tone={state !== 'live' ? 'text-[#06b6d4]' : metrics.severity >= 0.5 ? 'text-[#ef4444]' : 'text-white'}
-          >
-            {state !== 'live' ? '0.00 BREAKER' : metrics.severity.toFixed(2)}
-          </Readout>
+          <Readout label="hist severity">{metrics.severity.toFixed(2)}</Readout>
           <Readout label="hist liq vol">{`${usd(metrics.liquidationVol)}/min`}</Readout>
           <Readout label="stress">{`${metrics.stressByMarket[assetId].toFixed(2)}×`}</Readout>
           <Readout label="liq/min">{liq.toLocaleString('en-US')}</Readout>

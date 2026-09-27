@@ -78,9 +78,10 @@ A muted legend at the very bottom of the screen lists them.
    - **GENERATE POST-MORTEM** downloads a multi-page **PDF** report, `mochatrade-incident-report-[timestamp].pdf` (see section 3.9).
 
 ### Asset tab (e.g. ETH-PERP): the 3D order book
-- A 3D model of **ETH's bid-side order book**. Its intensity follows a **historical crash replay**: calm, then a flash crash, then sustained collapse.
-  - In the crash, the book caves into red **ravines** (liquidity vanishing) and sends out **shockwaves** on each liquidation spike.
-  - The header reads e.g. `replay tick 044/100 SUSTAINED | severity 1.00 | hist liq vol $62.80M/min`.
+- A 3D model of **ETH's bid-side order book**, driven by that market's **live stress**.
+  - In a cascade, the book slowly caves into red **ravines** (liquidity vanishing) and sends out **shockwaves** on each liquidation spike.
+  - The header leads with what the surface shows, e.g. `liquidity lost 85%`.
+  - It then shows the **historical replay** for reference, e.g. `replay tick 038/100 FLASH CRASH | hist severity 0.78 | hist liq vol $32.49M/min`. The replay drives these numbers only, not the mesh.
 - The asset's own **Pause / Halt** buttons sit underneath. Press one and the surface **snaps flat and cyan** with a blinking `CIRCUIT BREAKER // HALTED` plate.
 
 ### Incident stream (right column)
@@ -169,8 +170,21 @@ Axes: **x** = bid price level (mid price → 2% below mid), **z** = queue positi
 h₀(d) = H × (0.22 + 0.78 × (1 − e^(−d/0.28)))        d = distance from mid, 0..1
 ```
 
-**Severity comes from a historical replay** (`src/data/historical-crash.json`):
+**Collapse depth** (shared by the shader, the "liquidity lost" readout and the tab lamps):
+```
+D = 1 − e^(−0.8 × S)          S=0.5 → 33%,  S=1 → 55%,  S=2 → 80%,  S=3 → 91%
+```
+`S` is the market's live stress (section 3.3).
+
+**Severity easing** (so the floor caves in gradually, like a real structure):
+```
+sev ← sev + (D − sev) × (1 − e^(−k·Δt))     k = 0.6 collapsing (95% in 5 s), 0.75 recovering (4 s)
+```
+A circuit breaker skips this and sets `sev = 0` instantly.
+
+**The historical replay (UI numbers only)** (`src/data/historical-crash.json`):
 - **Data:** 100 recorded ticks like `{ "tick": 35, "severity": 0.566, "liquidationVol": 16190000 }`. The engine plays one tick every **500 ms** (a 50-second crash story) and loops.
+- **Where it shows:** its values appear in the asset panel's header as reference numbers. They don't shape the 3D mesh.
 
 | Ticks | Phase | Severity | Recorded liquidation volume |
 |---|---|---|---|
@@ -180,12 +194,6 @@ h₀(d) = H × (0.22 + 0.78 × (1 − e^(−d/0.28)))        d = distance from m
 
 - **Reproducible:** the file comes from a seeded generator (`scripts/generate-historical-crash.mjs`), so it can be regenerated identically.
 - **Volume model:** `liquidationVol ≈ ($0.8M + $55M × severity^2.2) × noise`, since cascades compound.
-
-**Severity easing** (so the replay's 2-per-second steps don't jerk):
-```
-sev ← sev + (replay severity − sev) × (1 − e^(−2.5·Δt))      95% of each new value in ~1.2 s
-```
-A circuit breaker skips this and sets `sev = 0` instantly.
 
 **Liquidity-loss field.** Liquidity is lost near mid first, along fracture lines:
 ```
@@ -203,7 +211,7 @@ height  = h₀·(1 − loss) − R·loss²                   small losses thin t
 ```
 ring = amp × fade × e^(−((r − front)/0.35)²),   amp = min(1, 0.3 + 3 × jump%),   lasts 5 s
 ```
-All three asset tabs replay the same timeline, but each has its own noise seed, so BTC, ETH and SOL look different.
+Each asset tab has its own noise seed and its own market's stress, so BTC, ETH and SOL look different.
 
 **Heat colour.** Heat is the share of the drop to the floor:
 - Green → yellow (at 35%) → red `#EF4444` (at 75%).
@@ -286,10 +294,10 @@ Every page has a `CONFIDENTIAL // INC-2417 // ledger head … // PAGE n OF N` fo
 | `incident-log.tsx` | Hash-chained ledger, notes, `.log` export, **GENERATE POST-MORTEM** (creates the jsPDF document) |
 | `postmortem.ts` | Report facts (`summarizeIncident`) and PDF layout (`renderPostmortemPdf`) |
 | `asset-tabs.tsx`, `cascade-panel.tsx` | Tab bar + single-asset view |
-| `cascade-graph-3d.tsx` | GLSL fBM order-book surface, driven by the replay's severity |
-| `cascade-dynamics.ts` | Shared stress → collapse formula (tab lamps) and the lane list |
+| `cascade-graph-3d.tsx` | GLSL fBM order-book surface, driven by the market's live stress |
+| `cascade-dynamics.ts` | Shared stress → collapse formula (3D mesh, readout, tab lamps) and the lane list |
 | `incident-stream.tsx` | Live terminal feed |
-| `src/data/historical-crash.json` | The 100-tick crash replay |
+| `src/data/historical-crash.json` | The 100-tick crash replay (reference numbers in the asset header) |
 | `scripts/generate-historical-crash.mjs` | Seeded generator for the replay file |
 | `App.tsx` | Layout, header, SLA input, hotkeys and legend, tab state, ruling state |
 
@@ -302,7 +310,7 @@ Every page has a `CONFIDENTIAL // INC-2417 // ledger head … // PAGE n OF N` fo
 | 0:00 | Open on OVERVIEW | "It's 2:45 pm in India. The US market is closed, so NVDA and TSLA perps have no anchor. A BTC flash crash has started." Point at the amber tag. |
 | 0:20 | Point at Live signals | "Two feeds decide escalation: dollars liquidated and angry tickets per minute." |
 | 0:35 | Wait for **SEV-1 ESCALATION** (volume trips first, ~20 s) | "Volume tripped *before* the count threshold. That's our early warning. Every 11 seconds of delay doubles the problem." |
-| 1:00 | Press **3** (ETH-PERP) | "This is ETH's order book, replaying a recorded crash. Green is healthy liquidity. Watch the header hit FLASH CRASH, and the bids near mid cave into red ravines. White is liquidations executing." |
+| 1:00 | Press **3** (ETH-PERP) | "This is ETH's order book. Green is healthy liquidity. As ETH's stress climbs, watch the bids near mid slowly cave into red ravines, and 'liquidity lost' rise in the header. White is liquidations executing." |
 | 1:25 | Click **Halt** on ETH | "Circuit breaker. The book snaps flat and cyan instantly. ETH only; BTC and SOL are still live." |
 | 1:40 | Press **1**, then **SPACE** | "Zero-mouse: one key pauses every market still cascading. Pausing liquidations halves the cascade every 4 seconds while trading stays open." |
 | 2:00 | **Comms triage → Announce Market Halt → STAGE** | "The public message fills itself: ETH-PERP, the exact halt time, in UTC and IST. Copy and it's out." |
@@ -312,7 +320,7 @@ Every page has a `CONFIDENTIAL // INC-2417 // ledger head … // PAGE n OF N` fo
 
 **Demo tips:**
 - Reload the page just before presenting (the incident restarts at SEV-2 and the replay at tick 1).
-- The replay loops every 50 s; if you open the ETH tab mid-loop, wait for `FLASH CRASH` in its header.
+- The 3D collapse follows live stress and eases in over ~5 s, so give it a few seconds after opening the ETH tab.
 - The SLA box lets you set a shorter clock, e.g. 15 minutes, for drama.
 
 ---
@@ -327,7 +335,7 @@ The dashboard was built so the data source can be swapped without touching the s
 | Liquidations per market, notional USD | Liquidation engine events | Kafka/NATS topic → WebSocket gateway |
 | Mark / index price per market | Pricing & index service | WebSocket |
 | **Stale-reference flag** | Index provider + an **NYSE session calendar** (holidays, early closes) against IST | Computed server-side |
-| Severity / order-book depth (the 3D surface) | Liquidation engine rate + L2 order book, bid levels down to −2% | Today a recorded replay drives `uSeverity`; production feeds the live series in the same slot, or uploads L2 depth to the shader |
+| Severity / order-book depth (the 3D surface) | Liquidation engine rate + L2 order book, bid levels down to −2% | Today the simulated stress drives `uSeverity`; production feeds the live stress into the same slot, or uploads L2 depth to the shader |
 | Ticket velocity, backlog | Support desk (e.g. Zendesk or Freshdesk) ticket-created webhooks | Webhook → aggregator |
 
 The `snapshot()` function stays: it's the single place where raw feeds become consistent derived numbers (stress, escalation, collapse depth).
@@ -370,10 +378,10 @@ The `snapshot()` function stays: it's the single place where raw feeds become co
 ## 8. Judge Q&A
 
 **Is this real data?**
-No. The counters come from a calibrated simulation and the 3D order book from a recorded crash replay (a seeded mock timeline), so the demo is reliable anywhere. The UI reads one typed interface, so real feeds plug in without redesign (section 6).
+No. The counters and the 3D order book come from a calibrated simulation, and the asset header also shows a recorded mock crash replay for reference, so the demo is reliable anywhere. The UI reads one typed interface, so real feeds plug in without redesign (section 6).
 
-**Why does the 3D view use a replay instead of the live numbers?**
-To show a realistic crash shape (calm → exponential spike → sustained) on cue, every time. The replay's `severity` drives the same shader uniform a live feed would.
+**What drives the 3D view?**
+Each market's live stress, through the same collapse formula as the "liquidity lost" readout and the tab lamps. The historical replay's figures sit alongside for reference but don't move the mesh; that keeps the surface smooth and slow-moving instead of jumping every half-second.
 
 **Why multiply instead of add in the cascade?**
 Liquidations cause more liquidations; that feedback is exponential. It gives the doubling-time metric (~11 s) that makes the urgency measurable.
@@ -407,7 +415,7 @@ The header uses liquidation count (≥ 500/min). The Live signals panel escalate
 ## 9. Honest limitations (say these before a judge does)
 - Simulated data; no backend, login or real paging.
 - State resets on reload (export the log or the PDF first).
-- The 3D crash is a mock historical replay; all three asset tabs play the same timeline.
+- The historical replay is mock data and is shown for reference only; the same timeline plays on every asset tab.
 - The PDF and ledger are tamper-evident, not cryptographically signed.
 - The US-closed flag is a scenario setting, not the live clock.
 - The Halt button has no confirmation step in the demo (production: two-person approval).

@@ -4,7 +4,7 @@ import { Billboard, Text } from '@react-three/drei'
 import * as THREE from 'three'
 import monoFont from '@fontsource/jetbrains-mono/files/jetbrains-mono-latin-800-normal.woff?url'
 import { cn } from '@/lib/utils'
-import type { LaneState } from './cascade-dynamics'
+import { collapseDepth, type LaneState } from './cascade-dynamics'
 import type { Market, Metrics } from './use-incident-sim'
 
 /*
@@ -16,12 +16,11 @@ import type { Market, Metrics } from './use-incident-sim'
  *
  * A healthy book follows the standard cumulative-depth curve: thin at mid,
  * thickening deeper into the book. During a cascade, liquidity near mid is
- * pulled. Severity comes from the historical crash replay
- * (src/data/historical-crash.json): each tick's severity is fed into uSeverity,
- * which scales multi-octave simplex fBM exponentially in amplitude, so the
- * floor caves into wide canyons that churn slowly on a slowed clock exactly
- * when the recorded timeline says. Each liquidation spike sends a slow
- * shockwave out from mid.
+ * pulled. Severity (the market's collapse depth, driven by its live liquidation
+ * rate) eases in over several seconds and scales multi-octave simplex fBM
+ * exponentially in amplitude, so the floor caves into wide canyons that churn
+ * slowly on a slowed clock. Each liquidation spike sends a slow shockwave out
+ * from mid. The historical replay drives UI numbers only, not this mesh.
  *
  * Heat is the share of the drop to the floor: green, yellow, then #EF4444.
  * Wires that hit the floor turn white (liquidations executing); the deepest
@@ -44,12 +43,10 @@ const BOOK_HEIGHT = 2.6
 const RAVINE_DEPTH = 5
 /** Bid levels shown, as % below mid */
 const BOOK_SPAN_PCT = 2
-/**
- * Severity follows the replay closely: ~1 s to 95% of each new tick's value
- * (ticks arrive every 0.5 s), which hides the steps without lagging the
- * timeline. Only the circuit breaker is instant.
- */
-const SEVERITY_EASE = 2.5
+// Heavy, slow structural collapse: severity eases in over ~5 s (95%) and
+// recovers over ~4 s. Only the circuit breaker is instant.
+const EASE_DOWN = 0.6
+const EASE_UP = 0.75
 /** Shockwave: travel speed across the surface (uv units/s) and lifetime (s) */
 const SHOCK_SPEED = 0.2
 const SHOCK_LIFE = 5
@@ -128,7 +125,7 @@ const simplex3d = /* glsl */ `
 `
 
 const vertexShader = /* glsl */ `
-  uniform float uSeverity; // 0..1, the historical replay's severity; hard-zeroed by a breaker
+  uniform float uSeverity; // 0..1, eased toward the market's collapse depth; hard-zeroed by a breaker
   uniform float uBreaker;
   uniform float uTime;
   uniform float uSeed;
@@ -270,7 +267,7 @@ function Surface({
   animate,
 }: {
   assetId: Market
-  /** Severity to track: the historical replay's current tick, 0..1 */
+  /** Collapse depth to move toward, 0..1 (from the market's live stress) */
   target: number
   state: LaneState
   /** Bumped per liquidation spike: { id, amp } starts a new shockwave */
@@ -314,10 +311,12 @@ function Surface({
     [geometry, material],
   )
 
-  // Switching asset: new fracture pattern (same replay timeline)
+  // Switching asset: new fracture pattern, and the book collapses in from intact
   useEffect(() => {
-    material.uniforms.uSeed.value = SEEDS[assetId] ?? 0
-    material.uniforms.uShockAge.value = SHOCK_LIFE
+    const u = material.uniforms
+    u.uSeed.value = SEEDS[assetId] ?? 0
+    u.uSeverity.value = 0
+    u.uShockAge.value = SHOCK_LIFE
     invalidate()
   }, [assetId, material, invalidate])
 
@@ -347,11 +346,11 @@ function Surface({
     u.uBreaker.value = breaker ? 1 : 0
     if (breaker) {
       // Hard stop: severity zeroes this frame, so all fBM churn vanishes at once.
-      // On release the book rebuilds from flat toward the replay's current tick.
+      // On release the book rebuilds from flat.
       u.uSeverity.value = 0
       u.uShockAge.value = SHOCK_LIFE
     } else {
-      const k = animate ? 1 - Math.exp(-SEVERITY_EASE * dt) : 1
+      const k = animate ? 1 - Math.exp(-(t > u.uSeverity.value ? EASE_DOWN : EASE_UP) * dt) : 1
       u.uSeverity.value += (t - u.uSeverity.value) * k
     }
     if (animate) {
@@ -529,7 +528,8 @@ export default function CascadeGraph3D({
     [],
   )
   const labelNodes = useRef(new Map<string, HTMLElement>())
-  const severity = metrics.severity
+  // The market's live stress sets the mesh's collapse; the replay is UI-only
+  const target = collapseDepth(metrics.stressByMarket[assetId], state)
 
   // One shockwave per liquidation spike in this market, sized by the relative jump
   const series = metrics.liqByMarket[assetId]
@@ -542,7 +542,7 @@ export default function CascadeGraph3D({
 
   const summary =
     state === 'live'
-      ? `${assetId} bid-side order book, historical replay tick ${metrics.replayTick} (${metrics.replayPhase}): severity ${severity.toFixed(2)}.`
+      ? `${assetId} bid-side order book: ${Math.round(target * 100)}% of near-mid liquidity lost.`
       : `${assetId} bid-side order book: circuit breaker, ${state}. Surface flat.`
 
   return (
@@ -560,7 +560,7 @@ export default function CascadeGraph3D({
         <color attach="background" args={['#000000']} />
         <FitCamera />
         <Frame />
-        <Surface assetId={assetId} target={severity} state={state} shock={shock} animate={!reducedMotion} />
+        <Surface assetId={assetId} target={target} state={state} shock={shock} animate={!reducedMotion} />
         {/* Text suspends while its font loads; keep that from blanking the surface */}
         <Suspense fallback={null}>
           <BreakerBanner state={state} animate={!reducedMotion} />
