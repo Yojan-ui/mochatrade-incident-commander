@@ -80,7 +80,7 @@ export default function DefenseLattice({
   const focus = nodes.find((n) => n.id === (flyTo ?? hovered))
 
   return (
-    <section className="panel overflow-hidden" aria-labelledby="lattice-heading">
+    <section className="panel flex h-full flex-col overflow-hidden" aria-labelledby="lattice-heading">
       <PanelHeader label="Defense lattice">
         <span id="lattice-heading" className="font-mono text-[10px] tracking-wider">
           <span className={intact === nodes.length ? 'text-ok' : 'text-crit'}>
@@ -91,18 +91,20 @@ export default function DefenseLattice({
 
       <div
         ref={frameRef}
-        className={cn('relative h-[340px] transition-opacity sm:h-[440px]', dimmed && 'opacity-40')}
+        className={cn(
+          'relative h-[340px] transition-opacity sm:h-[440px] xl:h-auto xl:min-h-0 xl:flex-1',
+          dimmed && 'opacity-40',
+        )}
       >
         <WebGLBoundary>
           <Canvas
             frameloop={inView ? 'always' : 'never'}
             dpr={[1, 2]}
             camera={{ position: [0, 3.4, 10], fov: 42 }}
-            gl={{ antialias: false, powerPreference: 'high-performance' }}
+            gl={{ antialias: false, alpha: true, powerPreference: 'high-performance' }}
             onPointerMissed={() => setHovered(null)}
             aria-hidden
           >
-            <color attach="background" args={['#0e1320']} />
             <Lattice
               nodes={nodes}
               score={report.score}

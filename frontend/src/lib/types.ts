@@ -60,7 +60,48 @@ export interface ScanReport {
   attack_paths: AttackPath[]
   one_fix: Fix | null
   other_fixes: Fix[]
-  observations: Record<string, unknown>
+  observations: Observations
+}
+
+// Raw collector output (backend Observations). The telemetry terminal replays it.
+export interface TxtLookup {
+  records: string[]
+  error: string | null
+}
+
+export interface StartTlsProbe {
+  host: string
+  ip: string | null
+  port: number
+  reachable: boolean
+  banner: string | null
+  ehlo_ok: boolean
+  starttls_offered: boolean
+  tls_version: string | null
+  cipher: string | null
+  cert_valid: boolean | null
+  cert_error: string | null
+  cert_subject: string | null
+  cert_issuer: string | null
+  cert_not_after: string | null
+  error: string | null
+  duration_ms: number | null
+}
+
+export interface Observations {
+  domain: string
+  mx: { hosts: { preference: number; host: string; addresses: string[] }[]; null_mx: boolean; error: string | null }
+  spf: TxtLookup & { lookup_count: number | null; lookup_error: string | null; lookup_incomplete?: boolean }
+  dkim: {
+    selectors_tried: string[]
+    keys: { selector: string; record: string }[]
+    failed_selectors?: string[]
+    error: string | null
+  }
+  dmarc: TxtLookup
+  mta_sts: { txt: TxtLookup; policy: string | null; policy_error: string | null }
+  tls_rpt: TxtLookup
+  starttls: StartTlsProbe | null
 }
 
 export interface DemoScenario {

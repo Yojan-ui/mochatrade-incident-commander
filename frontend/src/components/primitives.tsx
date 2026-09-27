@@ -1,6 +1,8 @@
 import { Check, Copy } from 'lucide-react'
 import { useEffect, useState, type ReactNode } from 'react'
 import { cn } from '@/lib/cn'
+import { STATUS_TONE } from '@/lib/meta'
+import type { Status } from '@/lib/types'
 
 export function Lamp({ className, pulse = false }: { className: string; pulse?: boolean }) {
   return (
@@ -13,14 +15,14 @@ export function Lamp({ className, pulse = false }: { className: string; pulse?: 
 
 export function PanelHeader({ label, children }: { label: string; children?: ReactNode }) {
   return (
-    <header className="flex min-h-9 items-center justify-between gap-3 border-b border-line px-4 py-2">
+    <header className="flex min-h-9 shrink-0 items-center justify-between gap-3 border-b border-white/[0.06] px-4 py-2">
       <h2 className="eyebrow">{label}</h2>
       {children}
     </header>
   )
 }
 
-export function CopyButton({ value, label }: { value: string; label: string }) {
+export function CopyButton({ value, label, text = 'COPY' }: { value: string; label: string; text?: string }) {
   const [copied, setCopied] = useState(false)
 
   useEffect(() => {
@@ -43,7 +45,7 @@ export function CopyButton({ value, label }: { value: string; label: string }) {
       )}
     >
       {copied ? <Check className="size-3" aria-hidden /> : <Copy className="size-3" aria-hidden />}
-      {copied ? 'COPIED' : 'COPY'}
+      {copied ? 'COPIED' : text}
     </button>
   )
 }
@@ -71,4 +73,30 @@ export function SeverityPips({ severity }: { severity: number }) {
       ))}
     </span>
   )
+}
+
+/** Minimal pill badge for a check's status. */
+export function StatusPill({ status, className }: { status: Status; className?: string }) {
+  const tone = STATUS_TONE[status]
+  return (
+    <span
+      className={cn(
+        'inline-flex h-5 shrink-0 items-center rounded-full border px-2 font-mono text-[9.5px] font-medium tracking-wider',
+        PILL_FILL[status],
+        tone.border,
+        tone.text,
+        className,
+      )}
+    >
+      {status === 'error' ? 'N/M' : status === 'info' ? 'N/A' : tone.label}
+    </span>
+  )
+}
+
+const PILL_FILL: Record<Status, string> = {
+  pass: 'bg-ok/10',
+  warn: 'bg-warn/10',
+  fail: 'bg-crit/10',
+  info: 'bg-white/[0.03]',
+  error: 'bg-white/[0.03]',
 }

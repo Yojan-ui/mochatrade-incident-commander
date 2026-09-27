@@ -32,3 +32,16 @@ In production the root `Dockerfile` builds this app and FastAPI serves `dist/` f
 Hovering (or keyboard-focusing) **The One Fix** card or an **attack path row** flies the camera to the relevant node: the fix's vector, or the path's most broken governing vector (primary vector on ties). The camera tracks the node as it orbits, the rest of the lattice dims below the bloom threshold, and a 180 ms grace period lets you slide between rows without the camera bouncing home. On `xl` screens the lattice is sticky beside the matrix so the fly-to stays in view.
 
 Links carry simulated data streams: 10 packets per link with fading trails, requests outbound and responses (whiter) inbound. Warning links run slower and drop packets mid-link; failing links send packets into the break, where they die in sparks.
+
+## Command deck layout
+
+At `xl` the top of the page is a viewport-height, 3-column deck of frosted-glass panels (translucent slate, backdrop blur, hairline borders over faint ambient glows):
+
+| Left: metrics | Center: 3D | Right: remediation & logs |
+|---|---|---|
+| **Security Posture** (0-100 score, grade, per-vector contribution) | **Defense Lattice** (transparent canvas; the camera re-fits to the column's aspect ratio) | **The One Fix** (the recommended record as a zone-file line in a dark code block; copy value or full line) |
+| **Attack Path Matrix**: the 7 checks with pill status badges and the number of open attack paths each gates | | **Real-Time Telemetry**: terminal feed |
+
+Below `xl` the column wrappers are `display: contents`, so panels stack in priority order: Posture, One Fix, 3D, Matrix, Telemetry. The full attack-path × vector table and the vector detail cards sit below the deck.
+
+**Telemetry** first replays the scan's real observations as a probe transcript (DNS answers, SPF lookup walk, DKIM selectors, MTA-STS policy fetch, and the STARTTLS exchange reconstructed from the probe result). It then appends simulated monitoring lines built from the same hosts and records. The panel is labelled SIMULATED. It auto-follows the tail unless you scroll up, and it can be paused.

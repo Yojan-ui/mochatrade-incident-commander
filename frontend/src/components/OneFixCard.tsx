@@ -2,15 +2,28 @@ import { ChevronDown, Crosshair, ShieldCheck } from 'lucide-react'
 import { useState } from 'react'
 import { cn } from '@/lib/cn'
 import { EFFORT_LABEL, VECTOR_ORDER } from '@/lib/meta'
-import type { AttackPath, Fix, ScanReport, VectorId } from '@/lib/types'
+import type { AttackPath, DnsRecord, Fix, ScanReport, VectorId } from '@/lib/types'
 import { CopyButton, PanelHeader } from './primitives'
 
-function RecordField({ label, value, copy }: { label: string; value: string; copy?: boolean }) {
+/** The record as a BIND zone-file line, lightly syntax-coloured, in a dark code block. */
+function ZoneRecord({ record }: { record: DnsRecord }) {
+  const host = record.host.endsWith('.') ? record.host : `${record.host}.`
+  const quoted = record.type === 'TXT' ? `"${record.value}"` : record.value
+  const line = `${host} 3600 IN ${record.type} ${quoted}`
   return (
-    <div className="grid grid-cols-[3.5rem_minmax(0,1fr)_auto] items-start gap-2 border-b border-line px-3 py-2 last:border-b-0">
-      <dt className="eyebrow pt-1">{label}</dt>
-      <dd className="font-mono text-[12.5px] leading-relaxed break-all text-slate-100">{value}</dd>
-      {copy ? <CopyButton value={value} label={label.toLowerCase()} /> : <span />}
+    <div className="overflow-hidden rounded-md border border-ok/20 bg-black/50">
+      <div className="flex items-center justify-between gap-2 border-b border-white/[0.06] px-3 py-1.5">
+        <span className="font-mono text-[9.5px] tracking-[0.14em] text-slate-500">ZONE FILE · {record.type}</span>
+        <div className="flex gap-1.5">
+          <CopyButton value={record.value} label="record value" text="VALUE" />
+          <CopyButton value={line} label="zone file line" text="LINE" />
+        </div>
+      </div>
+      <pre className="px-3 py-2.5 font-mono text-[11.5px] leading-relaxed break-all whitespace-pre-wrap">
+        <span className="text-slate-100">{host}</span>
+        <span className="text-slate-600"> 3600 IN </span>
+        <span className="text-ok">{record.type}</span> <span className="text-warn/90">{quoted}</span>
+      </pre>
     </div>
   )
 }
@@ -102,11 +115,7 @@ export function OneFixCard({
           </div>
         </div>
 
-        <dl className="rounded-sm border border-ok/25 bg-obsidian">
-          <RecordField label="Type" value={fix.record.type} />
-          <RecordField label="Host" value={fix.record.host} copy />
-          <RecordField label="Value" value={fix.record.value} copy />
-        </dl>
+        <ZoneRecord record={fix.record} />
 
         {fix.closes.length > 0 && (
           <div>

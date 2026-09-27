@@ -14,7 +14,7 @@ export function ScorePanel({ report }: { report: ScanReport }) {
 
   return (
     <section className="panel flex h-full flex-col" aria-labelledby="score-heading">
-      <PanelHeader label="Posture score">
+      <PanelHeader label="Security posture">
         <span
           className={cn(
             'rounded-sm border px-1.5 py-0.5 font-mono text-[10px] tracking-wider',

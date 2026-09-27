@@ -11,6 +11,18 @@ const FLY_OUT = 2.4
 const FLY_UP = 1.1
 const FLY_RATE = 3.2 // higher = snappier; exponential, so frame-rate independent
 
+// Half-extents the home view must fit: the orbit plus node labels.
+const FIT_HALF_WIDTH = 4.7
+const FIT_HALF_HEIGHT = 3.4
+const MIN_HOME = 9.5
+
+/** Camera distance that fits the whole lattice in a viewport of this aspect. */
+function homeDistance(aspect: number, fovDeg: number): number {
+  const vHalf = ((fovDeg * Math.PI) / 180) / 2
+  const hHalf = Math.atan(Math.tan(vHalf) * aspect)
+  return Math.max(MIN_HOME, FIT_HALF_WIDTH / Math.tan(hHalf), FIT_HALF_HEIGHT / Math.tan(vHalf))
+}
+
 /**
  * Damped orbit controls plus a fly-to rig.
  *
@@ -32,9 +44,10 @@ export function Controls({
 }) {
   const camera = useThree((s) => s.camera)
   const gl = useThree((s) => s.gl)
-  const width = useThree((s) => s.size.width)
+  const size = useThree((s) => s.size)
   const controls = useMemo(() => new OrbitControls(camera, gl.domElement), [camera, gl])
-  const home = width < 640 ? 11.5 : 10.5
+  const fov = camera instanceof THREE.PerspectiveCamera ? camera.fov : 42
+  const home = homeDistance(size.width / Math.max(1, size.height), fov)
 
   const rig = useRef<{ focus: number | null; returning: boolean }>({ focus: null, returning: false })
   const scratch = useMemo(
@@ -75,7 +88,7 @@ export function Controls({
 
   useEffect(() => () => controls.dispose(), [controls])
 
-  // Narrow viewports need the camera further out to fit the orbit and labels.
+  // Re-fit whenever the canvas changes shape (column resize, rotation).
   useEffect(() => {
     if (rig.current.focus !== null) return
     camera.position.setLength(home)

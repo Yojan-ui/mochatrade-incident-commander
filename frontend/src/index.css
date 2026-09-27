@@ -65,6 +65,18 @@
       24px 24px;
     mask-image: radial-gradient(ellipse 120% 90% at 50% 0%, #000 45%, transparent 100%);
   }
+  /* Ambient glows behind the grid: gives the frosted panels something to diffuse. */
+  body::after {
+    content: '';
+    position: fixed;
+    inset: 0;
+    z-index: -2;
+    pointer-events: none;
+    background:
+      radial-gradient(60rem 38rem at 8% -8%, rgb(16 185 129 / 0.09), transparent 65%),
+      radial-gradient(50rem 42rem at 100% 25%, rgb(56 189 248 / 0.06), transparent 65%),
+      radial-gradient(46rem 30rem at 55% 110%, rgb(99 102 241 / 0.05), transparent 65%);
+  }
   ::selection {
     background: color-mix(in srgb, var(--color-ok) 35%, transparent);
     color: #fff;
@@ -76,8 +88,13 @@
 }
 
 @layer components {
+  /* Frosted glass: translucent slate, heavy backdrop blur, hairline border,
+     1px top highlight and a soft drop shadow for depth. */
   .panel {
-    @apply rounded-sm border border-line bg-panel;
+    @apply rounded-md border border-white/[0.07] bg-panel/55 backdrop-blur-xl backdrop-saturate-150;
+    box-shadow:
+      inset 0 1px 0 0 rgb(255 255 255 / 0.05),
+      0 12px 40px -18px rgb(0 0 0 / 0.75);
   }
   /* Small uppercase section label: "ATTACK PATH MATRIX" */
   .eyebrow {

@@ -1,7 +1,9 @@
 import { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react'
 import { AttackMatrix } from '@/components/AttackMatrix'
+import { CheckMatrix } from '@/components/CheckMatrix'
 import { OneFixCard } from '@/components/OneFixCard'
 import { ScorePanel } from '@/components/ScorePanel'
+import { Telemetry } from '@/components/Telemetry'
 import { ErrorPanel, ScanningBanner, Skeleton } from '@/components/States'
 import { TopBar } from '@/components/TopBar'
 import { VectorGrid } from '@/components/VectorGrid'
@@ -14,7 +16,7 @@ import type { DemoScenario, VectorId } from '@/lib/types'
 const DefenseLattice = lazy(() => import('@/components/lattice/DefenseLattice'))
 
 function LatticePlaceholder() {
-  return <div className="panel h-[377px] animate-pulse bg-raised/40 sm:h-[477px]" aria-hidden />
+  return <div className="panel h-[377px] animate-pulse sm:h-[477px] xl:h-full" aria-hidden />
 }
 
 const DEFAULT_SCENARIO = 'startup'
@@ -108,30 +110,42 @@ export default function App() {
         {report && status !== 'error' && (
           <div className={cn('flex flex-col gap-3', loading && 'pointer-events-none')} aria-busy={loading}>
             {/*
-              < lg : stacked      Score / One Fix / Lattice / Matrix
-                lg : Score | One Fix, then Lattice and Matrix full width
-                xl : One Fix + Matrix on the left, Score + a sticky Lattice on the
-                     right, so the camera fly-to stays in view while hovering rows.
+              Command deck.
+                xl : 3 columns, viewport height. Left: metrics. Center: 3D. Right:
+                     remediation + telemetry. Columns scroll internally.
+               < xl: column wrappers are display:contents so each panel is a grid
+                     item and can be ordered: Posture, One Fix, 3D, Matrix, Telemetry.
             */}
-            <div className="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)] xl:grid-cols-[minmax(0,7fr)_minmax(0,5fr)]">
-              <div className={cn('min-w-0 xl:col-start-2 xl:row-start-1', loading && 'opacity-40')}>
-                <ScorePanel report={report} />
+            <div className="grid grid-cols-1 gap-3 lg:grid-cols-2 xl:h-[calc(100dvh-8.75rem)] xl:min-h-[680px] xl:grid-cols-[minmax(0,21rem)_minmax(0,1fr)_minmax(0,25rem)]">
+              <div className="contents xl:flex xl:min-h-0 xl:flex-col xl:gap-3 xl:overflow-y-auto">
+                <div className={cn('order-1 min-w-0 xl:shrink-0', loading && 'opacity-40')}>
+                  <ScorePanel report={report} />
+                </div>
+                <div className={cn('order-4 min-w-0 xl:min-h-0 xl:flex-1', loading && 'opacity-40')}>
+                  <CheckMatrix report={report} onAim={aim} onSelect={focusVector} />
+                </div>
               </div>
-              {/* Keyed so per-report UI state (expanded lists) resets on a new scan */}
-              <div className={cn('min-w-0 xl:col-start-1 xl:row-start-1', loading && 'opacity-40')}>
-                <OneFixCard key={reportKey} report={report} onAim={aim} />
-              </div>
+
               {/* Not keyed: the lattice stays mounted so links animate between reports */}
-              <div className="min-w-0 lg:col-span-2 xl:sticky xl:top-28 xl:col-span-1 xl:col-start-2 xl:row-start-2 xl:self-start">
+              <div className="order-3 min-w-0 lg:col-span-2 xl:order-none xl:col-span-1 xl:min-h-0">
                 <Suspense fallback={<LatticePlaceholder />}>
                   <DefenseLattice report={report} dimmed={loading} flyTo={flyTo} onSelectVector={focusVector} />
                 </Suspense>
               </div>
-              <div className={cn('min-w-0 lg:col-span-2 xl:col-span-1 xl:col-start-1 xl:row-start-2', loading && 'opacity-40')}>
-                <AttackMatrix report={report} onAim={aim} />
+
+              <div className="contents xl:flex xl:min-h-0 xl:flex-col xl:gap-3 xl:overflow-y-auto">
+                {/* Keyed so per-report UI state (expanded lists) resets on a new scan */}
+                <div className={cn('order-2 min-w-0 xl:shrink-0', loading && 'opacity-40')}>
+                  <OneFixCard key={reportKey} report={report} onAim={aim} />
+                </div>
+                <div className="order-5 h-[22rem] min-w-0 xl:h-auto xl:min-h-[14rem] xl:flex-1">
+                  <Telemetry report={report} pending={loading ? describe(source) : undefined} />
+                </div>
               </div>
             </div>
-            <div className={cn(loading && 'opacity-40')}>
+
+            <div className={cn('flex flex-col gap-3', loading && 'opacity-40')}>
+              <AttackMatrix report={report} onAim={aim} />
               <VectorGrid key={reportKey} report={report} focus={focus} />
             </div>
           </div>

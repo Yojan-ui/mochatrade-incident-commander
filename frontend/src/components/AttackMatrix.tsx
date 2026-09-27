@@ -39,7 +39,7 @@ export function AttackMatrix({
 
   return (
     <section className="panel" aria-labelledby="matrix-heading">
-      <PanelHeader label="Attack path matrix">
+      <PanelHeader label="Attack paths · detail">
         <span id="matrix-heading" className="font-mono text-[10px] tracking-wider">
           <span className={open ? 'text-crit' : 'text-ok'}>{open} OPEN</span>
           <span className="text-slate-600"> / {rows.length}</span>
