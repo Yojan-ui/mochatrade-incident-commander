@@ -1,4 +1,14 @@
 # SecureMailScope: FastAPI backend + static frontend, served by Uvicorn on :80
+
+# ---- Stage 1: build the React frontend -------------------------------------
+FROM node:22-slim AS frontend
+WORKDIR /build
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+COPY frontend/ ./
+RUN npm run build
+
+# ---- Stage 2: API + static files -------------------------------------------
 FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -13,9 +23,7 @@ COPY backend/requirements.txt ./requirements.txt
 RUN pip install -r requirements.txt
 
 COPY backend/app ./app
-# Placeholder page for now. A later phase adds a Node build stage and copies
-# its output here, e.g.  COPY --from=frontend /build/dist ./static
-COPY backend/static ./static
+COPY --from=frontend /build/dist ./static
 
 EXPOSE 80
 

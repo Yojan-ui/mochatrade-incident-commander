@@ -1,6 +1,7 @@
-# Keep the build context small: only backend/ is needed
-node_modules
-dist
+# Keep the build context small: only backend/ and frontend/ sources are needed.
+# Patterns are anchored at the repo root, so nested dirs need **/.
+**/node_modules
+**/dist
 .git
 src
 public
