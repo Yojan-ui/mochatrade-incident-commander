@@ -19,11 +19,11 @@ In production the root `Dockerfile` builds this app and FastAPI serves `dist/` f
 
 ## Defense Lattice (3D)
 
-`src/components/lattice/` renders the posture as a React Three Fiber scene: a wireframe icosahedron core (tinted by overall score) with the 7 vectors as orbiting octahedron satellites, joined by one dynamic `LineSegments` geometry rewritten every frame.
+`src/components/lattice/` renders the posture as a React Three Fiber scene: a lat/long wireframe sphere core for the target domain (tinted by overall score) with the 7 vectors as orbiting octahedron satellites, joined by razor-thin (1px) `LineSegments` rewritten every frame.
 
 - **Pass:** solid green link with data packets flowing to the node. **Warn:** amber. **Unmeasured / N/A:** dim slate, no glow.
-- **Fail:** the link snaps on an under-damped spring (whip, recoil, droop), turns red and sparks at the break; the node glitches (position/scale jitter, white flashes). Reverting to pass reconnects the link.
-- Glow comes from `@react-three/postprocessing` `<Bloom mipmapBlur luminanceThreshold={1}>`: only colours pushed above 1.0 (live links, packets, failing nodes) bloom.
+- **Fail:** the link snaps on an under-damped spring (whip, recoil, droop), turns red and sheds fragments that scatter, tumble and flicker around the break; the node glitches (position/scale jitter, hot red-white flashes). Reverting to pass reconnects the link.
+- Glow comes from three.js `UnrealBloomPass` (`UnrealBloom.tsx`: `EffectComposer` → `RenderPass` → `UnrealBloomPass` → `OutputPass`, run at `useFrame` priority 1). The composer renders to a HalfFloat target, so only colours pushed over the 0.8 threshold (live links, packets, failing nodes) bloom. The canvas uses `flat` (no tone mapping) and stays transparent over the glass panel.
 - `OrbitControls` with damping; wheel-zoom is off so the page still scrolls. Auto-rotate pauses while dragging.
 - Lazy-loaded chunk; rendering pauses when scrolled off-screen; honours `prefers-reduced-motion`. Click a node (or its legend chip) to jump to that vector's card.
 

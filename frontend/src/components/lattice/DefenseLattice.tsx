@@ -1,4 +1,3 @@
-import { Bloom, EffectComposer } from '@react-three/postprocessing'
 import { Canvas } from '@react-three/fiber'
 import { Component, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import * as THREE from 'three'
@@ -8,6 +7,7 @@ import type { ScanReport, VectorId } from '@/lib/types'
 import { Lamp, PanelHeader } from '../primitives'
 import { Controls } from './Controls'
 import { Lattice, type LatticeNode } from './Lattice'
+import { UnrealBloom } from './UnrealBloom'
 
 function useReducedMotion() {
   const query = '(prefers-reduced-motion: reduce)'
@@ -98,10 +98,11 @@ export default function DefenseLattice({
       >
         <WebGLBoundary>
           <Canvas
+            flat
             frameloop={inView ? 'always' : 'never'}
             dpr={[1, 2]}
             camera={{ position: [0, 3.4, 10], fov: 42 }}
-            gl={{ antialias: false, alpha: true, powerPreference: 'high-performance' }}
+            gl={{ antialias: true, alpha: true, powerPreference: 'high-performance' }}
             onPointerMissed={() => setHovered(null)}
             aria-hidden
           >
@@ -121,9 +122,7 @@ export default function DefenseLattice({
               positions={positions}
               reducedMotion={reducedMotion}
             />
-            <EffectComposer multisampling={4}>
-              <Bloom mipmapBlur luminanceThreshold={1} luminanceSmoothing={0.2} intensity={1.6} radius={0.75} />
-            </EffectComposer>
+            <UnrealBloom strength={1.0} radius={0.3} threshold={0.8} />
           </Canvas>
         </WebGLBoundary>
 

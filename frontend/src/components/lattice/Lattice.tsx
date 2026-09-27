@@ -39,6 +39,8 @@ const TRAIL = 3
 const TRAIL_GAP = 0.022
 const TRAIL_FADE = [1, 0.45, 0.18]
 const SPARKS = 2
+// Failing links also shed DEBRIS short fragments that scatter around the break.
+const DEBRIS = 6
 const POINTS_PER_LINK = STREAM * TRAIL + SPARKS
 const WHITE = new THREE.Color(1, 1, 1)
 const UP = new THREE.Vector3(0, 1, 0)
@@ -55,6 +57,55 @@ interface Packet {
   speed: number
   inbound: boolean // responses flow node -> core, requests core -> node
   dropAt: number // packet loss point on degraded (warn) links; >1 = never
+}
+
+interface Shard {
+  dir: THREE.Vector3 // scatter direction from the break
+  spin: THREE.Vector3 // second axis the shard tumbles through
+  reach: number
+  length: number
+  rate: number
+  phase: number
+}
+
+function makeShards(count: number): Shard[][] {
+  return Array.from({ length: count }, (_, i) =>
+    Array.from({ length: DEBRIS }, (_, k) => {
+      const seed = i * 53.7 + k * 7.9
+      const dir = new THREE.Vector3(hash(seed) - 0.5, hash(seed + 1) - 0.5, hash(seed + 2) - 0.5).normalize()
+      const spin = new THREE.Vector3().crossVectors(dir, new THREE.Vector3(0, 1, 0))
+      if (spin.lengthSq() < 1e-4) spin.set(1, 0, 0)
+      return {
+        dir,
+        spin: spin.normalize(),
+        reach: 0.18 + 0.32 * hash(seed + 3),
+        length: 0.07 + 0.12 * hash(seed + 4),
+        rate: 0.6 + 1.8 * hash(seed + 5),
+        phase: hash(seed + 6) * Math.PI * 2,
+      }
+    }),
+  )
+}
+
+/** Lat/long wireframe sphere as line segments (a clean globe, no triangle edges). */
+function globeGeometry(radius: number, parallels = 8, meridians = 12, steps = 64): THREE.BufferGeometry {
+  const pts: number[] = []
+  const at = (phi: number, theta: number) => [
+    radius * Math.sin(phi) * Math.cos(theta),
+    radius * Math.cos(phi),
+    radius * Math.sin(phi) * Math.sin(theta),
+  ]
+  for (let i = 1; i < parallels; i++) {
+    const phi = (i / parallels) * Math.PI
+    for (let k = 0; k < steps; k++)
+      pts.push(...at(phi, (k / steps) * Math.PI * 2), ...at(phi, ((k + 1) / steps) * Math.PI * 2))
+  }
+  for (let j = 0; j < meridians; j++) {
+    const theta = (j / meridians) * Math.PI * 2
+    for (let k = 0; k < steps / 2; k++)
+      pts.push(...at((k / (steps / 2)) * Math.PI, theta), ...at(((k + 1) / (steps / 2)) * Math.PI, theta))
+  }
+  return new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute(pts, 3))
 }
 
 function makeStreams(count: number): Packet[][] {
@@ -217,8 +268,10 @@ export function Lattice({
     [count],
   )
   const streams = useMemo(() => makeStreams(count), [count])
+  const shards = useMemo(() => makeShards(count), [count])
+  const globe = useMemo(() => globeGeometry(CORE_R), [])
   const core = useRef<THREE.Group>(null)
-  const coreWire = useRef<THREE.MeshBasicMaterial>(null)
+  const coreWire = useRef<THREE.LineBasicMaterial>(null)
   const coreHeart = useRef<THREE.MeshBasicMaterial>(null)
 
   // Two segments per link (core->break, break->node), rewritten every frame.
@@ -235,19 +288,28 @@ export function Lattice({
     g.setAttribute('color', new THREE.BufferAttribute(new Float32Array(n), 3).setUsage(THREE.DynamicDrawUsage))
     return g
   }, [count])
+  const debris = useMemo(() => {
+    const g = new THREE.BufferGeometry()
+    const n = count * DEBRIS * 2 * 3
+    g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(n), 3).setUsage(THREE.DynamicDrawUsage))
+    g.setAttribute('color', new THREE.BufferAttribute(new Float32Array(n), 3).setUsage(THREE.DynamicDrawUsage))
+    return g
+  }, [count])
   const dot = useMemo(makeDotTexture, [])
   const rings = useMemo(() => TILTS.map(orbitRing), [])
   useEffect(
     () => () => {
       links.dispose()
       packets.dispose()
+      debris.dispose()
+      globe.dispose()
       dot.dispose()
       rings.forEach((r) => {
         r.geometry.dispose()
         ;(r.material as THREE.Material).dispose()
       })
     },
-    [links, packets, dot, rings],
+    [links, packets, debris, globe, dot, rings],
   )
 
   const v = useMemo(
@@ -262,6 +324,9 @@ export function Lattice({
       p: new THREE.Vector3(),
       c: new THREE.Color(),
       inbound: new THREE.Color(),
+      mid: new THREE.Vector3(),
+      q: new THREE.Vector3(),
+      axis: new THREE.Vector3(),
     }),
     [],
   )
@@ -274,6 +339,8 @@ export function Lattice({
     const lc = links.attributes.color.array as Float32Array
     const pp = packets.attributes.position.array as Float32Array
     const pc = packets.attributes.color.array as Float32Array
+    const dp = debris.attributes.position.array as Float32Array
+    const dc = debris.attributes.color.array as Float32Array
 
     const write = (arr: Float32Array, idx: number, x: number, y: number, z: number) => {
       arr[idx * 3] = x
@@ -326,7 +393,8 @@ export function Lattice({
       }
       const glow = GLOW[node.status] * (isHovered ? 1.3 : 1) * dim
       if (sat.wire) {
-        if (glitching && Math.random() > 0.5) sat.wire.color.setRGB(3 * dim, 3 * dim, 3 * dim)
+        // Glitch frames flash hot red-white rather than pure white, so the node stays red under bloom.
+        if (glitching && Math.random() > 0.5) sat.wire.color.setRGB(2.4 * dim, 0.85 * dim, 0.85 * dim)
         else sat.wire.color.copy(PALETTE[node.status]).multiplyScalar(glow)
       }
       if (sat.heart) {
@@ -362,6 +430,32 @@ export function Lattice({
       writeVec(lp, base + 1, v.a)
       writeVec(lp, base + 2, v.b)
       writeVec(lp, base + 3, v.e)
+
+      // ---- debris: fragments scattered around the break, tumbling and flickering ----
+      const shatter = failing ? Math.min(1, Math.max(0, (broken - 0.2) / 0.8)) : 0
+      v.mid.addVectors(v.a, v.b).multiplyScalar(0.5)
+      shards[i].forEach((sh, k) => {
+        const idx = (i * DEBRIS + k) * 2
+        if (shatter <= 0) {
+          writeVec(dp, idx, v.mid) // zero-length: draws nothing
+          writeVec(dp, idx + 1, v.mid)
+          write(dc, idx, 0, 0, 0)
+          write(dc, idx + 1, 0, 0, 0)
+          return
+        }
+        const drift = sh.reach * shatter + 0.05 * Math.sin(t * sh.rate + sh.phase) * motion
+        v.q.copy(v.mid).addScaledVector(sh.dir, drift)
+        v.q.y -= 0.12 * shatter // fragments sag with the broken ends
+        const ang = t * sh.rate * motion + sh.phase
+        v.axis.copy(sh.dir).multiplyScalar(Math.cos(ang)).addScaledVector(sh.spin, Math.sin(ang))
+        v.p.copy(v.q).addScaledVector(v.axis, -sh.length / 2)
+        writeVec(dp, idx, v.p)
+        v.p.copy(v.q).addScaledVector(v.axis, sh.length / 2)
+        writeVec(dp, idx + 1, v.p)
+        const flicker = motion ? 1.4 + 1.8 * Math.random() : 2.2
+        writeCol(dc, idx, v.c.copy(PALETTE.fail), flicker * shatter * dim)
+        writeCol(dc, idx + 1, v.c, flicker * 0.5 * shatter * dim)
+      })
 
       v.c.copy(PALETTE[node.status])
       const linkGlow = GLOW[node.status] * (isHovered ? 1.4 : 1) * dim
@@ -421,6 +515,8 @@ export function Lattice({
 
     links.attributes.position.needsUpdate = true
     links.attributes.color.needsUpdate = true
+    debris.attributes.position.needsUpdate = true
+    debris.attributes.color.needsUpdate = true
     packets.attributes.position.needsUpdate = true
     packets.attributes.color.needsUpdate = true
 
@@ -443,17 +539,21 @@ export function Lattice({
       ))}
 
       <group ref={core}>
+        {/* Target domain: lat/long wireframe sphere around a dim solid heart */}
+        <lineSegments geometry={globe} rotation={[0.35, 0, 0.2]}>
+          <lineBasicMaterial ref={coreWire} toneMapped={false} />
+        </lineSegments>
         <mesh>
-          <icosahedronGeometry args={[CORE_R, 1]} />
-          <meshBasicMaterial ref={coreWire} wireframe toneMapped={false} />
-        </mesh>
-        <mesh rotation={[0.4, 0.6, 0]}>
-          <icosahedronGeometry args={[CORE_R * 0.5, 0]} />
+          <sphereGeometry args={[CORE_R * 0.42, 20, 14]} />
           <meshBasicMaterial ref={coreHeart} toneMapped={false} />
         </mesh>
       </group>
 
       <lineSegments geometry={links} frustumCulled={false}>
+        <lineBasicMaterial vertexColors toneMapped={false} />
+      </lineSegments>
+
+      <lineSegments geometry={debris} frustumCulled={false}>
         <lineBasicMaterial vertexColors toneMapped={false} />
       </lineSegments>
 
