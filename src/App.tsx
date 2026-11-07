@@ -7,6 +7,8 @@ import type { LaneState } from '@/components/dashboard/cascade-dynamics'
 import { CascadePanel } from '@/components/dashboard/cascade-panel'
 import { CommsTriage } from '@/components/dashboard/comms-triage'
 import { DecisionMatrix, type RulingKind } from '@/components/dashboard/decision-matrix'
+import { ForecastPanel } from '@/components/dashboard/forecast-panel'
+import { FraudPanel } from '@/components/dashboard/fraud-panel'
 import { IncidentLog } from '@/components/dashboard/incident-log'
 import { LiveSignalsPanel } from '@/components/dashboard/live-signals-panel'
 import { IncidentStream } from '@/components/dashboard/incident-stream'
@@ -204,8 +206,22 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
 }
 
 export default function App() {
-  const { metrics, controls, isPaused, isHalted, logs, ledger, record, toggleControl, pauseAllCascading, sendBroadcast } =
-    useIncidentSim()
+  const {
+    metrics,
+    controls,
+    isPaused,
+    isHalted,
+    logs,
+    ledger,
+    record,
+    toggleControl,
+    pauseAllCascading,
+    sendBroadcast,
+    accountFlags,
+    claims,
+    frozen,
+    freezeAccount,
+  } = useIncidentSim()
   const { critical } = metrics
   const mitigated = MARKET_LIST.filter((m) => isPaused[m] || isHalted[m])
   const cascading = MARKET_LIST.filter((m) => !isPaused[m] && !isHalted[m])
@@ -287,6 +303,7 @@ export default function App() {
               className="flex flex-col gap-2"
             >
               <LiveSignalsPanel metrics={metrics} />
+              <ForecastPanel metrics={metrics} isPaused={isPaused} isHalted={isHalted} />
               <ActionGrid
                 metrics={metrics}
                 controls={controls}
@@ -305,10 +322,11 @@ export default function App() {
                 onRuling={(text) => record('decision', text, 'commander')}
                 onRulingChange={setRuling}
               />
+              <FraudPanel flags={accountFlags} claims={claims} frozen={frozen} ruling={ruling} onFreeze={freezeAccount} />
               <IncidentLog
                 entries={ledger}
                 onAppend={(author, text) => record('note', text, author)}
-                getReportInput={() => ({ metrics, controls, ruling, ledger, slaMinutes })}
+                getReportInput={() => ({ metrics, controls, ruling, ledger, slaMinutes, accountFlags, claims, frozen })}
                 onReportSaved={(filename) => record('action', `Post-mortem PDF generated: ${filename}`, 'commander')}
               />
             </div>

@@ -6,7 +6,15 @@
 
 ## 0. The 20-second pitch
 
-> "In a flash crash, forced liquidations feed on themselves. In our model an unchecked cascade **doubles about every 11 seconds**, while a paused market **halves every 4 seconds**. The difference between a bad minute and a catastrophe is how fast one person can see it, decide, act and tell users. HIGH-CORTISOL puts that whole loop on one screen: **detect → escalate → act → communicate → record.**"
+> "In a flash crash, forced liquidations feed on themselves. In our model an unchecked cascade **doubles about every 11 seconds**, while a paused market **halves every 4 seconds**. The difference between a bad minute and a catastrophe is how fast one person can see it, decide, act and tell users. HIGH-CORTISOL puts that whole loop on one screen: **predict → manage → detect fraud → prove.** It forecasts the SEV-1 breach before it happens, lets one person stop it market by market, catches the traders who caused it and the fake claims that follow, and signs off a tamper-evident record."
+
+**Zero Hour track 01 (Quantitative Finance, Fintech & Risk Analytics) mapping:**
+
+| Track pillar | Where it lives | The maths |
+|---|---|---|
+| Predict market trends | **Cascade forecast** panel | Log-linear OLS on ln(liquidations/min), 95% CI from Student's t, time-to-breach, one-step back-tested MAPE (§3.11) |
+| Manage financial risk | Escalation triggers, per-market pause/halt, ruling, Insurance Fund gating | Compounding cascade model, stress scores (§3.1–3.5) |
+| Detect fraud | **Market abuse & claims surveillance** panel | Robust modified z-score (median/MAD) for liquidation hunting and spoofing; rule-based claim screening (§3.12) |
 
 ---
 
@@ -260,6 +268,45 @@ Every page has a `CONFIDENTIAL // INC-2417 // ledger head … // PAGE n OF N` fo
 - **All numbers in sync:** every figure is computed once per update in a single `snapshot()` function, so the counter, banner, header, tabs and draft message can never disagree. In testing, 120 of 120 samples matched.
 - **Safe flashing:** every blinking element runs at ≤ 1.25 Hz, under the WCAG limit of 3 flashes per second, and stops if the user has reduced motion on.
 
+### 3.11 Cascade forecast (predict)
+A cascade compounds, so `ln L` is a straight line in time. Over the last 8 ticks (`forecast.ts`):
+
+```
+ln L_t = a + b·t                    ordinary least squares
+R      = e^b                        growth per tick: each liquidation "spawns" R next tick
+95% CI = e^(b ± t₀.₉₇₅,ₙ₋₂ · SE(b))  Student's t, because n is small
+doubling = ln2 / b · 2.5 s          half-life = ln2 / −b · 2.5 s
+breach in = (ln 500 − ln L̂_now) / b · 2.5 s   with a CI from the slope's bounds
+```
+- **Regime:** `ACCELERATING` if the whole CI of R is above 1, `DECAYING` if below 1, else `NO CLEAR TREND`.
+- **Forecast cone:** the next 6 ticks, central line plus a 95% band (slope uncertainty + residual noise).
+- **Back-test:** each of the last 8 readings is predicted one step ahead from the window before it; the panel shows the mean absolute percentage error, so judges see how good the model is, not just what it says.
+- **Per market:** the same fit for each market against its share of the 500/min threshold, so you see which market will break next.
+- **Early warning:** when a breach is projected within 30 s, the forecaster writes a ledger entry. When SEV-1 actually fires, the log states the **lead time** ("forecast warned 14s ahead"), and the PDF reports it.
+
+### 3.12 Market abuse & claims surveillance (detect fraud)
+**Account surveillance** (`fraud.ts`) scores 240 accounts that traded the crash window with the **modified z-score** (Iglewicz & Hoaglin):
+
+```
+M = 0.6745 · (x − median) / MAD          flag at M ≥ 3.5
+```
+Median and MAD are robust: a few huge accounts can't drag the baseline toward themselves, as they would with mean and standard deviation. Money amounts are scored on a log scale.
+- **Liquidation hunting:** an outsized short opened ≤ 15 min before the crash **and** an outsized profit from it.
+- **Spoofing:** outsized order count **and** cancel ratio, with a median order life under 2 s.
+- The commander can **FREEZE** a flagged account; it's logged to the ledger and the PDF.
+- The population is synthetic and seeded (mulberry32), with two hunters and two spoofers planted, so the demo is repeatable and unit-tested.
+
+**Compensation-claim screening.** About 1 in 10 angry tickets is a compensation claim. Each is checked against the liquidation ledger before the Insurance Fund could pay it:
+
+| Rule | Held when |
+|---|---|
+| `NO_LIQUIDATION` | the account has no recorded liquidation on that market |
+| `DUPLICATE` | the same account already claimed for that market |
+| `INFLATED` | the claim is more than 1.5× the recorded loss |
+| `NEW_ACCOUNT` | the account was opened after the incident started |
+
+The panel shows claims screened, held, and the payout value held back; the PDF lists the totals by rule.
+
 ---
 
 ## 4. Architecture
@@ -427,5 +474,6 @@ The header uses liquidation count (≥ 500/min). The Live signals panel escalate
 ```bash
 npm install
 npm run dev
+npm test        # unit tests for the forecaster and the fraud scoring
 ```
 Open the URL Vite prints (e.g. http://localhost:5175).

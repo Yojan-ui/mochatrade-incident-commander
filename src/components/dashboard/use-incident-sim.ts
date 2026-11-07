@@ -1,5 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import HISTORICAL_CRASH from '@/data/historical-crash.json'
+import { fmtEta, forecastCascade } from './forecast'
+import {
+  CLAIM_REASON_LABEL,
+  generateAccounts,
+  scoreAccounts,
+  screenClaim,
+  type AccountFlag,
+  type Claim,
+  type LiquidationEvent,
+  type ScreenedClaim,
+} from './fraud'
 
 export const LIQUIDATION_THRESHOLD = 500
 const HISTORY_LENGTH = 28
@@ -10,7 +21,7 @@ const PRICE_STEP_MS = 850
 /** Per-market incident controls; broadcast is global and handled separately */
 export type Control = 'pause' | 'halt'
 export type ActionStatus = 'idle' | 'executing' | 'executed'
-export type LogLevel = 'liq' | 'sev' | 'ops' | 'tkt' | 'sys'
+export type LogLevel = 'liq' | 'sev' | 'ops' | 'tkt' | 'sys' | 'prd' | 'frd'
 export type Market = 'BTC-PERP' | 'ETH-PERP' | 'SOL-PERP' | 'NVDA-PERP' | 'TSLA-PERP'
 
 export interface LogLine {
@@ -153,6 +164,17 @@ function seedLedger(): LedgerEntry[] {
   return out
 }
 
+/**
+ * Surveillance population: synthetic, seeded accounts with a few planted bad
+ * actors. Scored once; the sweep reveals the flags shortly after monitoring starts.
+ */
+const SURVEILLANCE_SWEEP_MS = 6_000
+const ACCOUNT_FLAGS = scoreAccounts(generateAccounts(2417, 240, INCIDENT_OPENED_AT))
+const MAX_LIQ_EVENTS = 600
+const MAX_CLAIMS = 500
+/** A projected SEV-1 breach this close is written to the ledger as a forecast warning */
+export const FORECAST_WARN_S = 30
+
 export interface ActionRecord {
   status: ActionStatus
   at?: number
@@ -224,7 +246,7 @@ const SIZE: Record<Market, [number, number]> = {
 const AVG_UNITS: Record<Market, number> = { 'BTC-PERP': 0.7, 'ETH-PERP': 7, 'SOL-PERP': 65, 'NVDA-PERP': 35, 'TSLA-PERP': 20 }
 const DECIMALS: Record<Market, number> = { 'BTC-PERP': 1, 'ETH-PERP': 1, 'SOL-PERP': 2, 'NVDA-PERP': 2, 'TSLA-PERP': 2 }
 export const MARKET_LIST: readonly Market[] = ['BTC-PERP', 'ETH-PERP', 'SOL-PERP', 'NVDA-PERP', 'TSLA-PERP']
-const SHARE: Record<Market, number> = { 'BTC-PERP': 0.42, 'ETH-PERP': 0.26, 'SOL-PERP': 0.14, 'NVDA-PERP': 0.1, 'TSLA-PERP': 0.08 }
+export const MARKET_SHARE: Record<Market, number> = { 'BTC-PERP': 0.42, 'ETH-PERP': 0.26, 'SOL-PERP': 0.14, 'NVDA-PERP': 0.1, 'TSLA-PERP': 0.08 }
 /** "BTC-PERP", "BTC-PERP and ETH-PERP", "BTC-PERP, ETH-PERP and SOL-PERP" */
 /** $845.2K, $12.41M */
 export const usd = (v: number) =>
@@ -257,7 +279,7 @@ function seedExponential(end: number, start: number) {
  * evolves on its own). Rounding remainder goes to BTC so the sum is exact.
  */
 function splitByMarket(total: number): Record<Market, number> {
-  const w = byMarket((m) => SHARE[m] * rand(0.85, 1.15))
+  const w = byMarket((m) => MARKET_SHARE[m] * rand(0.85, 1.15))
   const sum = MARKET_LIST.reduce((acc, m) => acc + w[m], 0)
   const split = byMarket((m) => Math.round((total * w[m]) / sum))
   split['BTC-PERP'] = total - MARKET_LIST.filter((m) => m !== 'BTC-PERP').reduce((acc, m) => acc + split[m], 0)
@@ -323,7 +345,7 @@ function snapshot(series: Series, prices: Record<Market, number>): Metrics {
     peakLiquidations: Math.max(...liqHistory),
     avgLiquidations: Math.round(liqHistory.reduce((a, b) => a + b, 0) / liqHistory.length),
     load: liquidations / LIQUIDATION_THRESHOLD,
-    stressByMarket: byMarket((m) => last(series.liqByMarket[m]) / (LIQUIDATION_THRESHOLD * SHARE[m])),
+    stressByMarket: byMarket((m) => last(series.liqByMarket[m]) / (LIQUIDATION_THRESHOLD * MARKET_SHARE[m])),
     critical: liquidations >= LIQUIDATION_THRESHOLD,
     prices,
     drawdown: (prices['BTC-PERP'] - OPEN_PRICES['BTC-PERP']) / OPEN_PRICES['BTC-PERP'],
@@ -356,6 +378,14 @@ export function useIncidentSim() {
   const [logs, setLogs] = useState<LogLine[]>([])
   const [ledger, setLedger] = useState<LedgerEntry[]>(seedLedger)
   const ledgerRef = useRef(ledger)
+  const [accountFlags, setAccountFlags] = useState<AccountFlag[]>([])
+  const [claims, setClaims] = useState<ScreenedClaim[]>([])
+  const [frozen, setFrozen] = useState<Record<string, number>>({})
+  const claimsRef = useRef<ScreenedClaim[]>([])
+  const liqEventsRef = useRef<LiquidationEvent[]>([])
+  const claimSeq = useRef(0)
+  /** When the forecaster last warned of a breach that hasn't happened yet */
+  const forecastWarnedAt = useRef<number | null>(null)
 
   // Timers read through refs so they never restart. Both refs are written in the
   // same statement as their state, so a timer never sees a value the UI doesn't.
@@ -406,6 +436,52 @@ export function useIncidentSim() {
     log('ops', 'incident commander paged; risk and support on bridge')
   }, [log])
 
+  /**
+   * One incoming compensation claim. Most are genuine (a real liquidation,
+   * claimed at about its loss); the rest are the patterns screening exists to
+   * catch: inflated, duplicate, no liquidation at all, or a fresh account.
+   */
+  const makeClaim = useCallback((now: number): Claim | null => {
+    const events = liqEventsRef.current
+    const earlier = claimsRef.current
+    const day = 86_400_000
+    const oldAccount = () => now - Math.floor(rand(30, 900)) * day
+    const id = `CLM-${String(++claimSeq.current).padStart(4, '0')}`
+    const r = Math.random()
+    if (events.length && r < 0.8) {
+      const e = events[Math.floor(Math.random() * events.length)]
+      const claimedUsd = e.lossUsd * (r < 0.7 ? rand(0.85, 1.1) : rand(1.8, 3.2))
+      return { id, account: e.account, market: e.market, claimedUsd, ts: now, accountCreatedAt: oldAccount() }
+    }
+    if (earlier.length && r < 0.87) {
+      const c = earlier[Math.floor(Math.random() * earlier.length)]
+      return { ...c, id, claimedUsd: c.claimedUsd * rand(0.95, 1.05), ts: now }
+    }
+    const market = MARKET_LIST[Math.floor(Math.random() * MARKET_LIST.length)]
+    const fresh = r >= 0.94 // opened during the incident, never liquidated
+    return {
+      id,
+      account: hexAcct(),
+      market,
+      claimedUsd: rand(4_000, 40_000),
+      ts: now,
+      accountCreatedAt: fresh ? now - rand(10_000, now - INCIDENT_OPENED_AT) : oldAccount(),
+    }
+  }, [])
+
+  // Surveillance sweep: flags appear once the first scan of the crash window completes
+  useEffect(() => {
+    const id = window.setTimeout(() => {
+      setAccountFlags(ACCOUNT_FLAGS)
+      log('frd', `surveillance sweep complete: ${ACCOUNT_FLAGS.length} accounts flagged for market abuse`)
+      for (const f of ACCOUNT_FLAGS) {
+        log('frd', `${f.pattern} acct ${f.account} score ${f.score.toFixed(1)}: ${f.evidence}`)
+        record('system', `Surveillance flag: ${f.pattern} by acct ${f.account} (robust z ${f.score.toFixed(1)})`, 'surveillance')
+      }
+    }, SURVEILLANCE_SWEEP_MS)
+    return () => window.clearTimeout(id)
+  }, [log, record])
+
   // Counter ticks land every 2–3 seconds. Growth is multiplicative, so an
   // unchecked cascade compounds and the sparklines curve upward.
   useEffect(() => {
@@ -425,7 +501,7 @@ export function useIncidentSim() {
         else if (paused[m]) growth = rand(0.55, 0.75)
         else if (Math.random() < 0.12) growth = rand(0.93, 1) // brief lull
         else growth = rand(1.08, 1.2) * (Math.random() < 0.22 ? rand(1.15, 1.35) : 1) // compounding, with spikes
-        const cap = MAX_LIQUIDATIONS * SHARE[m]
+        const cap = MAX_LIQUIDATIONS * MARKET_SHARE[m]
         return Math.round(Math.max(halted[m] ? 0 : 2, Math.min(last(prev.liqByMarket[m]) * growth, cap)))
       })
       const liquidations = MARKET_LIST.reduce((sum, m) => sum + liqNext[m], 0)
@@ -464,9 +540,23 @@ export function useIncidentSim() {
         .filter(({ from, to }) => to > from * 1.3 && to > 120)
         .sort((a, b) => b.to - b.from - (a.to - a.from))[0]
 
+      // Forecaster: warn before the threshold is crossed, then report the lead time
+      const forecast = forecastCascade(next.liqHistory, LIQUIDATION_THRESHOLD)
+      const eta = forecast?.breachInS
+      if (!next.critical && eta && eta.mid <= FORECAST_WARN_S && forecastWarnedAt.current === null) {
+        forecastWarnedAt.current = tickAt
+        const ci = `95% CI ${fmtEta(eta.low)}–${fmtEta(eta.high)}`
+        log('prd', `forecast: SEV-1 breach projected in ${fmtEta(eta.mid)} (${ci}); R ${forecast.growth.toFixed(2)}×/tick`)
+        record('escalation', `Forecast: SEV-1 breach projected in ${fmtEta(eta.mid)} (${ci}), R ${forecast.growth.toFixed(2)}x/tick`, 'forecaster')
+      } else if (!next.critical && forecastWarnedAt.current !== null && (!eta || eta.mid > 2 * FORECAST_WARN_S)) {
+        forecastWarnedAt.current = null // the threat receded; a later warning is a new one
+      }
+
       if (!prev.critical && next.critical) {
-        log('sev', `liquidations crossed ${LIQUIDATION_THRESHOLD}/min (${liquidations}); escalated to SEV-1, paging head of risk`)
-        record('escalation', `SEV-1 declared: liquidations ${liquidations}/min ≥ ${LIQUIDATION_THRESHOLD}`, 'risk-engine')
+        const lead = forecastWarnedAt.current === null ? '' : `; forecast warned ${fmtEta((tickAt - forecastWarnedAt.current) / 1000)} ahead`
+        forecastWarnedAt.current = null
+        log('sev', `liquidations crossed ${LIQUIDATION_THRESHOLD}/min (${liquidations}); escalated to SEV-1, paging head of risk${lead}`)
+        record('escalation', `SEV-1 declared: liquidations ${liquidations}/min ≥ ${LIQUIDATION_THRESHOLD}${lead}`, 'risk-engine')
       } else if (prev.critical && !next.critical) {
         log('sys', `liquidations back under ${LIQUIDATION_THRESHOLD}/min (${liquidations}); holding SEV-1 until stable for 10 min`)
         record('escalation', `Liquidations back under ${LIQUIDATION_THRESHOLD}/min (${liquidations}); SEV-1 held pending 10 min stability`, 'risk-engine')
@@ -484,6 +574,19 @@ export function useIncidentSim() {
       if (next.ticketVelocity > prev.ticketVelocity * 1.25 && next.ticketVelocity > 200) {
         log('tkt', `ticket velocity ${prev.ticketVelocity} → ${next.ticketVelocity}/min; top tag "position closed without warning"`)
       }
+
+      // A share of angry tickets are compensation claims; each is screened on arrival
+      const newClaims = Math.min(4, Math.floor(ticketVelocity * elapsedMin * 0.1 + Math.random()))
+      for (let i = 0; i < newClaims; i++) {
+        const claim = makeClaim(tickAt)
+        if (!claim) continue
+        const screened = screenClaim(claim, liqEventsRef.current, claimsRef.current, INCIDENT_OPENED_AT)
+        claimsRef.current = [...claimsRef.current.slice(-(MAX_CLAIMS - 1)), screened]
+        if (screened.reasons.length) {
+          log('frd', `claim ${screened.id} acct ${screened.account} ${usd(screened.claimedUsd)} HELD: ${screened.reasons.map((r) => CLAIM_REASON_LABEL[r]).join(', ')}`)
+        }
+      }
+      if (newClaims) setClaims(claimsRef.current)
     }
 
     const loop = () => {
@@ -494,7 +597,7 @@ export function useIncidentSim() {
     }
     loop()
     return () => window.clearTimeout(timer)
-  }, [commitMetrics, log, record])
+  }, [commitMetrics, log, record, makeClaim])
 
   // Replay clock: advance one recorded tick every REPLAY_TICK_MS, looping at the end
   useEffect(() => {
@@ -526,7 +629,7 @@ export function useIncidentSim() {
       for (const m of active) {
         // Forced selling scales with this market's liquidation rate (normalised by its
         // usual share); the fall eases as its drawdown deepens but never turns positive.
-        const pressure = 0.0006 + Math.min(last(prev.liqByMarket[m]) / SHARE[m], 3000) * 0.0000012
+        const pressure = 0.0006 + Math.min(last(prev.liqByMarket[m]) / MARKET_SHARE[m], 3000) * 0.0000012
         const ease = Math.max(0.25, 1 + prev.drawdownByMarket[m] * 2)
         // Stale reference: nothing anchors the perp, so each step moves further
         const vol = isStale(m) ? STALE_REF_VOLATILITY : 1
@@ -541,10 +644,17 @@ export function useIncidentSim() {
       const market = active.find((m) => (r -= last(prev.liqByMarket[m])) < 0) ?? active[0]
       const size = rand(...SIZE[market])
       const stale = isStale(market)
+      const account = hexAcct()
+      const notionalUsd = size * prices[market]
+      liqEventsRef.current = [
+        ...liqEventsRef.current.slice(-(MAX_LIQ_EVENTS - 1)),
+        // A forced close typically burns most of the margin: 4–20% of notional at 5–25× leverage
+        { account, market, notionalUsd, lossUsd: notionalUsd * rand(0.04, 0.2), ts: Date.now() },
+      ]
       const slip = rand(0.4, prev.critical ? 7.8 : 3.2) * (stale ? STALE_REF_SLIP : 1)
       log(
         'liq',
-        `${market}  long ${size.toFixed(2)} ${UNIT[market]} @ ${fmtPrice(market, prices[market])}  acct ${hexAcct()}  slip ${slip.toFixed(1)}%${stale ? '  stale-ref' : ''}`,
+        `${market}  long ${size.toFixed(2)} ${UNIT[market]} @ ${fmtPrice(market, prices[market])}  acct ${account}  slip ${slip.toFixed(1)}%${stale ? '  stale-ref' : ''}`,
       )
     }, PRICE_STEP_MS)
     return () => window.clearInterval(id)
@@ -623,8 +733,21 @@ export function useIncidentSim() {
     }, 650)
   }, [commitControls, log, record])
 
+  const freezeAccount = useCallback(
+    (flag: AccountFlag) => {
+      setFrozen((prev) => (prev[flag.account] ? prev : { ...prev, [flag.account]: Date.now() }))
+      log('ops', `acct ${flag.account} frozen by commander pending ${flag.pattern} investigation`)
+      record('action', `Account ${flag.account} frozen pending investigation (${flag.pattern}, z ${flag.score.toFixed(1)})`, 'commander')
+    },
+    [log, record],
+  )
+
   return {
     metrics,
+    accountFlags,
+    claims,
+    frozen,
+    freezeAccount,
     controls,
     isPaused: engagedMap(controls, 'pause'),
     isHalted: engagedMap(controls, 'halt'),
