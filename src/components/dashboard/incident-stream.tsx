@@ -10,6 +10,8 @@ const LEVELS: Record<LogLevel, { tag: string; text: string; bar: string }> = {
   ops: { tag: 'OPS', text: 'text-ok', bar: 'bg-ok' },
   tkt: { tag: 'TKT', text: 'text-info', bar: 'bg-info' },
   sys: { tag: 'SYS', text: 'text-gray-500', bar: 'bg-gray-500' },
+  prd: { tag: 'PRD', text: 'text-[#a78bfa]', bar: 'bg-[#a78bfa]' },
+  frd: { tag: 'FRD', text: 'text-[#f472b6]', bar: 'bg-[#f472b6]' },
 }
 
 const stamp = (ts: number) => {

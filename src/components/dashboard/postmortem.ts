@@ -1,7 +1,10 @@
 import type { jsPDF } from 'jspdf'
 import { RULINGS, type RulingKind } from './decision-matrix'
+import { fmtEta, forecastCascade } from './forecast'
+import { CLAIM_REASON_LABEL, summarizeClaims, type AccountFlag, type ClaimReason, type ScreenedClaim } from './fraud'
 import {
   INCIDENT_OPENED_AT,
+  LIQUIDATION_THRESHOLD,
   MARKET_LIST,
   SESSION_STARTED_AT,
   fmtPrice,
@@ -19,6 +22,9 @@ export interface PostmortemInput {
   ledger: readonly LedgerEntry[]
   slaMinutes?: number
   generatedAt?: number
+  accountFlags?: readonly AccountFlag[]
+  claims?: readonly ScreenedClaim[]
+  frozen?: Readonly<Record<string, number>>
 }
 
 const iso = (ts: number) => new Date(ts).toISOString().replace(/\.\d{3}Z$/, 'Z')
@@ -36,7 +42,17 @@ const TAG: Record<LedgerEntry['kind'], string> = { action: 'ACT', decision: 'DEC
 export const fileStamp = (ts: number) => iso(ts).replace(/:/g, '-')
 
 /** Every fact the report states, computed once from the dashboard state */
-export function summarizeIncident({ metrics, controls, ruling, ledger, slaMinutes, generatedAt = Date.now() }: PostmortemInput) {
+export function summarizeIncident({
+  metrics,
+  controls,
+  ruling,
+  ledger,
+  slaMinutes,
+  generatedAt = Date.now(),
+  accountFlags = [],
+  claims = [],
+  frozen = {},
+}: PostmortemInput) {
   const reachedSev1 =
     metrics.critical ||
     metrics.escalation.active ||
@@ -58,7 +74,16 @@ export function summarizeIncident({ metrics, controls, ruling, ledger, slaMinute
   if (stillMitigated.length) followUps.push(`Plan and announce reopening for: ${stillMitigated.map((m) => `${m} (${status(m)})`).join(', ')}.`)
   if (controls.broadcast.count === 0) followUps.push('No public status update was broadcast during the incident.')
   if (metrics.usEquityClosed) followUps.push('Review stale-reference risk controls for US-stock perps during US off-hours.')
+  const unfrozen = accountFlags.filter((f) => !frozen[f.account])
+  if (accountFlags.length) followUps.push(`Refer ${accountFlags.length} flagged account(s) to compliance for market-abuse review${unfrozen.length ? `; ${unfrozen.length} not yet frozen` : ''}.`)
+  const claimSummary = summarizeClaims(claims)
+  if (claimSummary.flagged) followUps.push(`Manually review ${claimSummary.flagged} held compensation claim(s) (${usd(claimSummary.heldUsd)}) before any Insurance Fund payout.`)
   followUps.push('Root-cause analysis: price feed, liquidation engine and margin parameters.')
+
+  // Forecast quality: how far ahead the first warning came before SEV-1
+  const sev1 = ledger.find((e) => e.text.startsWith('SEV-1 declared'))
+  const warning = ledger.find((e) => e.actor === 'forecaster' && (!sev1 || e.ts <= sev1.ts))
+  const forecast = forecastCascade(metrics.liqHistory, LIQUIDATION_THRESHOLD)
 
   return {
     generatedAt,
@@ -84,6 +109,18 @@ export function summarizeIncident({ metrics, controls, ruling, ledger, slaMinute
       volume: usd(metrics.liqVolumeByMarket[m]),
     })),
     followUps,
+    forecast: {
+      leadTimeMs: sev1 && warning ? sev1.ts - warning.ts : null,
+      warned: !!warning,
+      growth: forecast?.growth ?? null,
+      growthCi: forecast ? `${forecast.growthLow.toFixed(2)}-${forecast.growthHigh.toFixed(2)}` : null,
+      regime: forecast?.regime ?? null,
+      mape: forecast?.backtestMape ?? null,
+    },
+    surveillance: {
+      flags: accountFlags.map((f) => ({ ...f, frozen: !!frozen[f.account] })),
+      claims: claimSummary,
+    },
     ledger,
     chainIntact: verifyLedger(ledger),
     head: ledger[ledger.length - 1]?.hash ?? '-',
@@ -199,8 +236,27 @@ export function renderPostmortemPdf(doc: jsPDF, report: ReturnType<typeof summar
   section('3. FOLLOW-UP ACTIONS')
   for (const f of report.followUps) write(`[ ] ${f}`, { indent: 0 })
 
+  // ── Prediction and fraud surveillance ─────────────────────────────────────
+  section('4. FORECAST & SURVEILLANCE')
+  const fc = report.forecast
+  kv('FORECAST LEAD TIME', fc.leadTimeMs !== null ? `${fmtEta(fc.leadTimeMs / 1000)} before SEV-1` : fc.warned ? 'warned; SEV-1 not reached' : 'no advance warning recorded', true)
+  kv('GROWTH R AT EXPORT', fc.growth === null ? 'n/a' : `${fc.growth.toFixed(3)}x/tick (95% CI ${fc.growthCi}), ${fc.regime}`)
+  kv('FORECAST MAPE (1-STEP)', fc.mape === null ? 'n/a' : `${(fc.mape * 100).toFixed(1)}%`)
+  const sv = report.surveillance
+  kv('ACCOUNTS FLAGGED', String(sv.flags.length), sv.flags.length > 0)
+  for (const f of sv.flags) {
+    write(`- ${f.account}  ${f.pattern.toUpperCase()}  z ${f.score.toFixed(1)}  ${f.frozen ? 'FROZEN' : 'NOT FROZEN'}`, { size: 8, gap: 0 })
+    write(f.evidence, { size: 7, color: 90, indent: 4, gap: 0.6 })
+  }
+  kv('CLAIMS SCREENED', String(sv.claims.screened))
+  kv('CLAIMS HELD', `${sv.claims.flagged} (${usd(sv.claims.heldUsd)} of ${usd(sv.claims.claimedUsd)} claimed)`, sv.claims.flagged > 0)
+  for (const r of Object.keys(sv.claims.byReason) as ClaimReason[]) {
+    if (sv.claims.byReason[r]) write(`- ${CLAIM_REASON_LABEL[r]}: ${sv.claims.byReason[r]}`, { size: 8, gap: 0 })
+  }
+  write('Abuse flags use the modified z-score 0.6745(x - median)/MAD, flagged at >= 3.5. The forecast is an OLS fit of ln(liquidations/min) over the last 8 ticks.', { size: 7.5, color: 90 })
+
   // ── Decision record ────────────────────────────────────────────────────────
-  section('4. DECISION RECORD (IMMUTABLE LEDGER)')
+  section('5. DECISION RECORD (IMMUTABLE LEDGER)')
   write(
     `${report.ledger.length} entries. Hash chain (FNV-1a, genesis 00000000) ${report.chainIntact ? 'VERIFIED' : 'BROKEN'}; head ${report.head}. Each hash covers the previous hash and the entry, so any edit breaks every later link.`,
     { size: 7.5, color: 90 },
@@ -217,7 +273,7 @@ export function renderPostmortemPdf(doc: jsPDF, report: ReturnType<typeof summar
   }
 
   // ── Sign-off ───────────────────────────────────────────────────────────────
-  section('5. SIGN-OFF')
+  section('6. SIGN-OFF')
   for (const role of ['INCIDENT COMMANDER', 'HEAD OF RISK', 'COMPLIANCE OFFICER']) {
     ensure(12)
     y += 6
